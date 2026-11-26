@@ -41,13 +41,19 @@
   <div class="layout">
     <aside id="sidebar" class="sidebar" aria-label="Map navigation">
       <div class="search">
-        <input id="search" type="search" placeholder="Search components" autocomplete="off" aria-label="Search components">
+        <input id="search" type="search" placeholder="Search components and groups" autocomplete="off" aria-label="Search components and groups">
         <div id="searchResults" class="search-results" hidden></div>
       </div>
 
       <section>
         <h2>Layers</h2>
         <ul id="layerList" class="layer-list"></ul>
+      </section>
+
+      <section id="kindLegend">
+        <h2>Connections</h2>
+        <p id="kindNote" class="hint" hidden>Set by storyline</p>
+        <ul id="kindList" class="layer-list"></ul>
       </section>
 
       <section>

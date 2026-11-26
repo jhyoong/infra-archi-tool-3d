@@ -183,6 +183,18 @@ input[type="checkbox"] { width: auto; accent-color: var(--amber); }
 .count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .layer-row.off .layer-name { color: var(--muted); }
 .layer-row.off .swatch { opacity: 0.3; }
+.kind-row {
+  display: grid;
+  grid-template-columns: 36px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+}
+.kind-swatch { display: block; }
+.kind-row.off .kind-name { color: var(--muted); }
+.kind-row.off .kind-swatch { opacity: 0.3; }
+#kindNote { margin: 0 0 4px; }
 
 .story-row {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -366,9 +378,18 @@ body.story-on .edit-hint { display: none; }
 .conn:hover { background: var(--surface-2); }
 .conn .dir { color: var(--amber); }
 .conn .muted { margin-left: auto; font-size: 12px; }
-.conn-edit li { display: grid; grid-template-columns: 1fr 1fr 32px; gap: 6px; align-items: center; margin-bottom: 6px; }
+.conn-edit li { display: grid; grid-template-columns: 1fr 1fr 32px; gap: 6px; align-items: center; margin-bottom: 10px; }
+.conn-edit .conn-name { grid-column: 1 / -1; }
+.conn .kind-tag { margin-left: auto; flex: none; font-size: 12px; color: var(--muted); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 5px; }
+.conn .muted + .kind-tag { margin-left: 0; }
 .conn-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conn-edit + button, .links-edit > button { margin-top: 6px; }
+.props { width: 100%; border-collapse: collapse; font-size: 13px; }
+.props th, .props td { text-align: left; vertical-align: top; padding: 4px 8px 4px 0; border-bottom: 1px solid var(--line, rgba(128,128,128,.25)); }
+.props th { font-weight: 600; width: 40%; color: var(--muted); }
+.props-edit > button { margin-top: 6px; }
+.prop-row { display: grid; grid-template-columns: 1fr 1.4fr 32px 32px 32px; gap: 6px; margin-bottom: 6px; }
+.prop-row input { min-width: 0; }
 .link-row { display: grid; grid-template-columns: 1fr 1.4fr 32px; gap: 6px; margin-bottom: 6px; }
 .panel-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
 .panel .link { margin: -6px 0 12px; font-size: 12px; }

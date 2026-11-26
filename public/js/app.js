@@ -1,21 +1,16 @@
-import { MapScene, Thumbnailer } from './scene.js';
+import { MapScene, Thumbnailer, KIND_STYLES } from './scene.js';
 import { MODEL_TYPES, TYPE_MAP } from './models.js';
+import {
+  str, num, isHex, safeUrl, makeId, usedIds, normalize as normalizeData,
+  CONN_KINDS, isDuplicateConnection, groupParent, childGroups, groupMembers, endpointLayer,
+} from './data.js';
 
 const DATA_URL = 'data/infrastructure.json';
 const DRAFT_KEY = 'infra-map:draft';
 const UNDO_LIMIT = 60;
-const DEFAULT_LAYERS = [
-  { id: 'hardware', name: 'Hardware', color: '#A0A8B5' },
-  { id: 'network', name: 'Network', color: '#2FBF9F' },
-  { id: 'platform', name: 'Platform', color: '#9B87F5' },
-  { id: 'application', name: 'Application', color: '#5AA7F0' },
-];
-
 const $ = (sel) => document.querySelector(sel);
 const clone = (o) => JSON.parse(JSON.stringify(o));
-const isHex = (v) => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v);
-const num = (v, fallback = 0) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
-const str = (v) => (typeof v === 'string' ? v : '');
+const normalize = (raw) => normalizeData(raw, new Set(Object.keys(TYPE_MAP)));
 
 const state = {
   published: null,
@@ -28,6 +23,9 @@ const state = {
   story: null,
   preStoryCam: null,
   editingStory: null,
+  kindFilter: new Set(CONN_KINDS.map((k) => k.id)), // connection kinds the user shows; not saved with the map
+  stepKinds: null, // kinds a shown storyline step overrides the filter with, or null
+  previewing: null, // { sid, i } of the step previewed from the storyline editor, or null
   exported: false,
   draftStale: false,
 };
@@ -69,125 +67,6 @@ function toast(msg, ms = 3200) {
 }
 
 // ---------- Data validation ----------
-function safeUrl(u) {
-  if (typeof u !== 'string' || !u.trim()) return null;
-  try {
-    const url = new URL(u.trim(), window.location.href);
-    return ['http:', 'https:', 'mailto:'].includes(url.protocol) ? u.trim() : null;
-  } catch {
-    return null;
-  }
-}
-
-function makeId(prefix, used) {
-  let id;
-  do id = `${prefix}-${Math.random().toString(36).slice(2, 8)}`; while (used.has(id));
-  used.add(id);
-  return id;
-}
-
-function usedIds(d) {
-  return new Set([...d.components, ...d.groups, ...d.connections, ...d.storylines].map((x) => x.id));
-}
-
-function normalize(raw) {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('the file is not a map (expected a JSON object)');
-  const warn = [];
-  const used = new Set();
-  const takeId = (id, prefix, what) => {
-    if (typeof id === 'string' && id && !used.has(id)) { used.add(id); return id; }
-    const fresh = makeId(prefix, used);
-    warn.push(`${what} had a missing or duplicate id; assigned ${fresh}`);
-    return fresh;
-  };
-  const meta = { title: 'Infrastructure map', layerGap: 10, ...(raw.meta && typeof raw.meta === 'object' ? raw.meta : {}) };
-  meta.title = str(meta.title) || 'Infrastructure map';
-  meta.layerGap = Math.min(24, Math.max(4, num(meta.layerGap, 10)));
-
-  const srcLayers = Array.isArray(raw.layers) && raw.layers.length ? raw.layers : DEFAULT_LAYERS;
-  const layerIds = new Set();
-  const layers = srcLayers.map((L, i) => {
-    let id = str(L.id) || `layer-${i + 1}`;
-    while (layerIds.has(id)) id += '-x';
-    layerIds.add(id);
-    return { id, name: str(L.name) || id, color: isHex(L.color) ? L.color : DEFAULT_LAYERS[i % 4].color };
-  });
-  const firstLayer = layers[0].id;
-  const layerOf = (l, what) => {
-    if (layerIds.has(l)) return l;
-    warn.push(`${what} had an unknown layer "${l}"; moved to ${firstLayer}`);
-    return firstLayer;
-  };
-  const links = (arr) => (Array.isArray(arr) ? arr : [])
-    .map((l) => ({ label: str(l?.label), url: safeUrl(l?.url) }))
-    .filter((l) => l.url);
-
-  const typeIcons = {};
-  for (const [k, v] of Object.entries(raw.typeIcons || {})) if (str(v)) typeIcons[k] = v;
-
-  const components = (Array.isArray(raw.components) ? raw.components : []).map((c) => {
-    const name = str(c.name) || 'Untitled';
-    let type = str(c.type);
-    if (!TYPE_MAP[type]) { warn.push(`Component "${name}" had an unknown type "${type}"; using generic`); type = 'generic'; }
-    return {
-      id: takeId(c.id, 'c', `Component "${name}"`),
-      name, type,
-      layer: layerOf(c.layer, `Component "${name}"`),
-      x: num(c.x), z: num(c.z),
-      description: str(c.description),
-      links: links(c.links),
-      color: isHex(c.color) ? c.color : null,
-      scale: Math.min(4, Math.max(0.3, num(c.scale, 1))),
-      icon: str(c.icon) || null,
-    };
-  });
-  const compIds = new Set(components.map((c) => c.id));
-
-  const groups = (Array.isArray(raw.groups) ? raw.groups : []).map((g) => {
-    const name = str(g.name) || 'Untitled group';
-    return {
-      id: takeId(g.id, 'g', `Group "${name}"`),
-      name,
-      layer: layerOf(g.layer, `Group "${name}"`),
-      x: num(g.x), z: num(g.z),
-      w: Math.max(2, num(g.w, 10)), d: Math.max(2, num(g.d, 8)),
-      description: str(g.description),
-      color: isHex(g.color) ? g.color : null,
-    };
-  });
-
-  const seenPairs = new Set();
-  const connections = [];
-  for (const k of Array.isArray(raw.connections) ? raw.connections : []) {
-    const pair = [k.from, k.to].sort().join('|');
-    if (!compIds.has(k.from) || !compIds.has(k.to) || k.from === k.to) { warn.push(`Dropped a connection from "${k.from}" to "${k.to}" (missing component)`); continue; }
-    if (seenPairs.has(pair)) { warn.push(`Dropped a duplicate connection between "${k.from}" and "${k.to}"`); continue; }
-    seenPairs.add(pair);
-    connections.push({ id: takeId(k.id, 'k', 'A connection'), from: k.from, to: k.to, label: str(k.label) });
-  }
-
-  const vec = (a) => (Array.isArray(a) && a.length === 3 && a.every((n) => Number.isFinite(n)) ? a : null);
-  const storylines = (Array.isArray(raw.storylines) ? raw.storylines : []).map((s) => {
-    const name = str(s.name) || 'Untitled storyline';
-    return {
-      id: takeId(s.id, 's', `Storyline "${name}"`),
-      name,
-      steps: (Array.isArray(s.steps) ? s.steps : []).map((st, i) => {
-        const pos = vec(st.camera?.position), tgt = vec(st.camera?.target);
-        return {
-          title: str(st.title) || `Step ${i + 1}`,
-          caption: str(st.caption),
-          view: st.view === 'iso' ? 'iso' : '3d',
-          highlight: (Array.isArray(st.highlight) ? st.highlight : []).filter((id) => compIds.has(id)),
-          camera: pos && tgt ? { position: pos, target: tgt } : null,
-        };
-      }),
-    };
-  });
-
-  return { data: { version: 1, meta, layers, typeIcons, groups, components, connections, storylines }, warnings: warn };
-}
-
 function sameMap(a, b) {
   if (!a || !b) return false;
   const strip = (d) => JSON.stringify({ ...d, meta: { ...d.meta, updated: undefined } });
@@ -268,6 +147,7 @@ function undo() {
   state.data = JSON.parse(state.undo.pop());
   state.exported = false;
   afterChange();
+  refreshPreview();
   toast('Undone.');
 }
 
@@ -277,6 +157,13 @@ const groupById = (id, d = state.data) => d.groups.find((g) => g.id === id);
 const layerById = (id, d = state.data) => d.layers.find((L) => L.id === id) || d.layers[0];
 const storyById = (id, d = state.data) => d.storylines.find((s) => s.id === id);
 const typeLabel = (t) => TYPE_MAP[t]?.label || 'Generic';
+const kindLabel = (id) => CONN_KINDS.find((k) => k.id === id)?.label || id;
+function entityById(id, d = state.data) {
+  const c = compById(id, d);
+  if (c) return { kind: 'component', item: c };
+  const g = groupById(id, d);
+  return g ? { kind: 'group', item: g } : null;
+}
 const compColor = (c) => c.color || layerById(c.layer).color;
 
 // ---------- Selection ----------
@@ -291,13 +178,13 @@ function select(ids, kind) {
 
 function onPick(hit, e) {
   if (state.connectFrom) {
-    if (hit?.kind === 'component') finishConnect(hit.id);
+    if (hit) finishConnect(hit.id);
     return;
   }
   if (!hit) {
     if (!e?.shiftKey) {
       select([], null);
-      if (!state.story) scene.setHighlight(null);
+      if (!state.story) clearPreview();
     }
     return;
   }
@@ -321,7 +208,7 @@ function onDragEnd({ kind, id, x, z, members }) {
     const t = kind === 'component' ? compById(id, d) : groupById(id, d);
     if (t) { t.x = x; t.z = z; }
     for (const m of members) {
-      const c = compById(m.id, d);
+      const c = m.kind === 'group' ? groupById(m.id, d) : compById(m.id, d);
       if (c) { c.x = m.x; c.z = m.z; }
     }
   }, { sidebar: false });
@@ -333,7 +220,7 @@ function startConnect(id) {
   state.connectFrom = id;
   scene.setConnectMode(true);
   const b = $('#banner');
-  b.textContent = `Click the component to connect “${compById(id)?.name}” to. Press Esc to cancel.`;
+  b.textContent = `Click the component or group to connect “${entityById(id)?.item.name}” to. Press Esc to cancel.`;
   b.hidden = false;
 }
 
@@ -345,11 +232,11 @@ function endConnect() {
 
 function finishConnect(toId) {
   const from = state.connectFrom;
-  if (toId === from) { toast('Pick a different component to connect to.'); return; }
-  const exists = state.data.connections.some((k) => (k.from === from && k.to === toId) || (k.from === toId && k.to === from));
+  if (toId === from) { toast('Pick a different component or group to connect to.'); return; }
+  const exists = isDuplicateConnection(state.data.connections, from, toId, 'data');
   endConnect();
-  if (exists) { toast('These components are already connected.'); return; }
-  commit((d) => d.connections.push({ id: makeId('k', usedIds(d)), from, to: toId, label: '' }));
+  if (exists) { toast('These are already connected with a Data line.'); return; }
+  commit((d) => d.connections.push({ id: makeId('k', usedIds(d)), from, to: toId, kind: 'data', label: '' }));
   toast('Connected.');
 }
 
@@ -371,7 +258,7 @@ function addComponent(type) {
   let id;
   commit((dd) => {
     id = makeId('c', usedIds(dd));
-    dd.components.push({ id, name: `${def.label} ${count + 1}`, type, layer, x, z, description: '', links: [], color: null, scale: 1, icon: null });
+    dd.components.push({ id, name: `${def.label} ${count + 1}`, type, layer, x, z, description: '', links: [], properties: [], color: null, scale: 1, icon: null });
   });
   if (scene.hiddenLayers.has(layer)) { scene.setLayerVisible(layer, true); renderSidebar(); }
   select([id], 'component');
@@ -395,13 +282,10 @@ function deleteSelection() {
   const ids = new Set(state.selection);
   const kind = state.selKind;
   commit((d) => {
-    if (kind === 'group') {
-      d.groups = d.groups.filter((g) => !ids.has(g.id));
-    } else {
-      d.components = d.components.filter((c) => !ids.has(c.id));
-      d.connections = d.connections.filter((k) => !ids.has(k.from) && !ids.has(k.to));
-      for (const s of d.storylines) for (const st of s.steps) st.highlight = st.highlight.filter((x) => !ids.has(x));
-    }
+    if (kind === 'group') d.groups = d.groups.filter((g) => !ids.has(g.id));
+    else d.components = d.components.filter((c) => !ids.has(c.id));
+    d.connections = d.connections.filter((k) => !ids.has(k.from) && !ids.has(k.to));
+    for (const s of d.storylines) for (const st of s.steps) st.highlight = st.highlight.filter((x) => !ids.has(x));
   });
   select([], null);
   const n = ids.size;
@@ -444,10 +328,14 @@ function syncStoryInset() {
 }
 
 function showStep(st) {
+  let unhid = false;
   for (const id of st.highlight) {
-    const c = compById(id);
-    if (c && scene.hiddenLayers.has(c.layer)) scene.setLayerVisible(c.layer, true);
+    const layer = endpointLayer(state.data, id);
+    if (layer && scene.hiddenLayers.has(layer)) { scene.setLayerVisible(layer, true); unhid = true; }
   }
+  state.stepKinds = st.kinds;
+  applyKinds();
+  if (unhid) renderSidebar();
   scene.setHighlight(st.highlight);
   if (st.camera) scene.applyCameraState({ view: st.view, ...st.camera });
   else scene.frameIds(st.highlight, st.view);
@@ -459,10 +347,33 @@ function exitStory() {
   $('#story').hidden = true;
   document.body.classList.remove('story-on');
   syncStoryInset();
-  scene.setHighlight(null);
+  clearPreview();
   if (state.preStoryCam) scene.applyCameraState(state.preStoryCam);
   state.preStoryCam = null;
   renderSidebar();
+}
+
+// Shows the user's line filter unless a storyline step is overriding it.
+function applyKinds() {
+  scene.setVisibleKinds(state.stepKinds ?? state.kindFilter);
+  renderLegend();
+}
+
+// Drops a step's highlight and line override (after playing or previewing a step).
+function clearPreview() {
+  state.previewing = null;
+  scene.setHighlight(null);
+  if (state.stepKinds) { state.stepKinds = null; applyKinds(); }
+}
+
+// Re-applies the previewed step's lines and highlights after the step (or the whole map) changed.
+function refreshPreview() {
+  if (!state.previewing || state.story) return;
+  const st = storyById(state.previewing.sid)?.steps[state.previewing.i];
+  if (!st) { clearPreview(); return; }
+  state.stepKinds = st.kinds;
+  applyKinds();
+  scene.setHighlight(st.highlight);
 }
 
 function newStory() {
@@ -477,12 +388,12 @@ function newStory() {
 
 function addStep(sid) {
   const cam = scene.getCameraState();
-  const highlight = state.selKind === 'component' ? [...state.selection] : [];
+  const highlight = [...state.selection];
   commit((d) => {
     const s = storyById(sid, d);
-    s.steps.push({ title: `Step ${s.steps.length + 1}`, caption: '', view: cam.view, highlight, camera: { position: cam.position, target: cam.target } });
+    s.steps.push({ title: `Step ${s.steps.length + 1}`, caption: '', view: cam.view, highlight, camera: { position: cam.position, target: cam.target }, kinds: null });
   }, { panel: false });
-  toast(highlight.length ? `Step added with ${highlight.length} highlighted.` : 'Step added. Select components first to highlight them in a step.');
+  toast(highlight.length ? `Step added with ${highlight.length} highlighted.` : 'Step added. Select components or a group first to highlight them in a step.');
 }
 
 // ---------- Rendering: title, sidebar ----------
@@ -510,6 +421,8 @@ function renderSidebar() {
       }, hidden ? 'Show' : 'Hide'));
   }));
 
+  renderLegend();
+
   const area = $('#storyArea');
   const s = state.editMode && state.editingStory ? storyById(state.editingStory) : null;
   if (s) { area.replaceChildren(storyEditor(s)); return; }
@@ -528,11 +441,66 @@ function renderSidebar() {
   area.replaceChildren(...rows);
 }
 
+function kindSwatch(kind) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const st = KIND_STYLES[kind] || { color: '#93A4BA', dash: null };
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 36 10');
+  svg.setAttribute('width', '36');
+  svg.setAttribute('height', '10');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('class', 'kind-swatch');
+  const line = document.createElementNS(NS, 'line');
+  const directed = CONN_KINDS.find((k) => k.id === kind)?.directed;
+  for (const [k, v] of Object.entries({ x1: 1, y1: 5, x2: directed ? 29 : 35, y2: 5, stroke: st.color, 'stroke-width': 2 })) line.setAttribute(k, String(v));
+  // World-unit dashes scaled up so the pattern reads at swatch size.
+  if (st.dash) line.setAttribute('stroke-dasharray', st.dash.map((n) => Math.max(1, Math.round(n * 10))).join(' '));
+  svg.append(line);
+  if (directed) {
+    const tip = document.createElementNS(NS, 'path');
+    tip.setAttribute('d', 'M29 1.5 L35 5 L29 8.5 Z');
+    tip.setAttribute('fill', st.color);
+    svg.append(tip);
+  }
+  return svg;
+}
+
+function renderLegend() {
+  const overridden = !!state.stepKinds;
+  $('#kindNote').hidden = !overridden;
+  $('#kindList').replaceChildren(...CONN_KINDS.map((K) => {
+    const on = state.kindFilter.has(K.id);
+    return h('li', { class: `kind-row${on ? '' : ' off'}` },
+      kindSwatch(K.id),
+      h('span', { class: 'kind-name' }, K.label),
+      h('button', {
+        type: 'button', class: 'small ghost', 'aria-pressed': String(on),
+        'aria-label': `${on ? 'Hide' : 'Show'} ${K.label} lines`,
+        onclick: () => {
+          if (on) state.kindFilter.delete(K.id); else state.kindFilter.add(K.id);
+          if (!state.stepKinds) scene.setVisibleKinds(state.kindFilter);
+          renderLegend();
+        },
+      }, on ? 'Hide' : 'Show'));
+  }));
+}
+
+const kindsSummary = (kinds) => (kinds ? `Shows: ${kinds.map(kindLabel).join(', ')}` : 'Shows: all lines');
+
+function currentKinds() {
+  const f = state.kindFilter;
+  return f.size === CONN_KINDS.length ? null : CONN_KINDS.filter((k) => f.has(k.id)).map((k) => k.id);
+}
+
 function storyEditor(s) {
   const sid = s.id;
-  const stepUpd = (i, fn, opts = { rebuild: false, panel: false, sidebar: false }) =>
+  const stepUpd = (i, fn, opts = { rebuild: false, panel: false, sidebar: false }) => {
     commit((d) => fn(storyById(sid, d).steps[i]), opts);
+    if (state.previewing?.sid === sid && state.previewing.i === i) refreshPreview();
+  };
+  // Reordering or removing steps shifts indices, so any step preview is dropped first.
   const move = (i, dir) => commit((d) => {
+    clearPreview();
     const steps = storyById(sid, d).steps;
     const [st] = steps.splice(i, 1);
     steps.splice(i + dir, 0, st);
@@ -553,10 +521,17 @@ function storyEditor(s) {
           h('select', { 'aria-label': `Step ${i + 1} view`, onchange: (e) => stepUpd(i, (x) => { x.view = e.target.value; }) },
             h('option', { value: '3d', selected: st.view === '3d' }, '3D view'),
             h('option', { value: 'iso', selected: st.view === 'iso' }, '2.5D view')),
-          h('span', { class: 'muted' }, `${st.highlight.length} highlighted, ${st.camera ? 'saved camera' : 'auto-framed'}`)),
+          h('span', { class: 'muted' }, `${st.highlight.length} highlighted, ${st.camera ? 'saved camera' : 'auto-framed'}`),
+          h('span', { class: 'muted' }, kindsSummary(st.kinds))),
         h('div', { class: 'step-actions' },
-          btn('Preview', () => showStep(st), 'small'),
-          btn('Use selection', () => stepUpd(i, (x) => { x.highlight = state.selKind === 'component' ? [...state.selection] : []; }, { rebuild: false, panel: false }), 'small ghost'),
+          btn('Preview', () => { showStep(st); state.previewing = { sid, i }; }, 'small'),
+          btn('Use selection', () => stepUpd(i, (x) => { x.highlight = [...state.selection]; }, { rebuild: false, panel: false }), 'small ghost'),
+          btn('Use current line filter', () => {
+            if (!state.kindFilter.size) { toast('Turn on at least one kind of line first.'); return; }
+            const kinds = currentKinds();
+            stepUpd(i, (x) => { x.kinds = kinds; }, { rebuild: false, panel: false });
+          }, 'small ghost'),
+          btn('Show all lines', () => stepUpd(i, (x) => { x.kinds = null; }, { rebuild: false, panel: false }), 'small ghost'),
           btn('Save camera', () => {
             const c = scene.getCameraState();
             stepUpd(i, (x) => { x.camera = { position: c.position, target: c.target }; x.view = c.view; }, { rebuild: false, panel: false });
@@ -564,17 +539,17 @@ function storyEditor(s) {
           st.camera && btn('Auto-frame', () => stepUpd(i, (x) => { x.camera = null; }, { rebuild: false, panel: false }), 'small ghost'),
           i > 0 && btn('Move up', () => move(i, -1), 'small ghost'),
           i < s.steps.length - 1 && btn('Move down', () => move(i, 1), 'small ghost'),
-          btn('Remove', () => commit((d) => storyById(sid, d).steps.splice(i, 1), { rebuild: false, panel: false }), 'small danger')))))
-      : h('p', { class: 'empty' }, 'No steps yet. Set up the view, select the components to highlight, then add a step.'),
+          btn('Remove', () => commit((d) => { clearPreview(); storyById(sid, d).steps.splice(i, 1); }, { rebuild: false, panel: false }), 'small danger')))))
+      : h('p', { class: 'empty' }, 'No steps yet. Set up the view, select the components or group to highlight, then add a step.'),
     btn('Add step from current view', () => addStep(sid), 'block'),
-    h('p', { class: 'hint' }, 'A step saves the camera, the view, and the selected components as highlights.'),
+    h('p', { class: 'hint' }, 'A step saves the camera, the view, and the selected components or group as highlights. It shows all lines unless you give it a line filter.'),
     h('div', { class: 'row-actions' },
       btn('Play', () => playStory(sid), 'small'),
       btn('Delete storyline', () => {
         if (!confirm(`Delete the storyline “${s.name}”?`)) return;
         commit((d) => { d.storylines = d.storylines.filter((x) => x.id !== sid); }, { rebuild: false, panel: false });
       }, 'small danger'),
-      btn('Done', () => { state.editingStory = null; scene.setHighlight(null); renderSidebar(); }, 'small primary')));
+      btn('Done', () => { state.editingStory = null; clearPreview(); renderSidebar(); }, 'small primary')));
 }
 
 // ---------- Rendering: details panel ----------
@@ -608,16 +583,62 @@ function renderPanel() {
   p.replaceChildren(...content.filter(Boolean));
 }
 
+// Connections touching a component or group; `other` is the far end, `otherKind` says what it is.
 function connectionsOf(id) {
   return state.data.connections
     .filter((k) => k.from === id || k.to === id)
-    .map((k) => ({ k, out: k.from === id, other: compById(k.from === id ? k.to : k.from) }))
-    .filter((x) => x.other);
+    .map((k) => {
+      const e = entityById(k.from === id ? k.to : k.from);
+      return e && { k, out: k.from === id, other: e.item, otherKind: e.kind };
+    })
+    .filter(Boolean);
 }
 
 function goTo(id) {
-  select([id], 'component');
-  scene.focusComponent(id);
+  const e = entityById(id);
+  if (!e) return;
+  select([id], e.kind);
+  if (e.kind === 'group') scene.focusGroup(id); else scene.focusComponent(id);
+}
+
+function connList(conns) {
+  return conns.length
+    ? h('ul', { class: 'conns' }, conns.map(({ k, out, other, otherKind }) => h('li', {},
+      h('button', { type: 'button', class: 'conn', onclick: () => goTo(other.id) },
+        h('span', { class: 'dir', 'aria-label': out ? 'to' : 'from' }, out ? '→' : '←'),
+        h('span', {}, other.name, otherKind === 'group' && h('span', { class: 'muted' }, ' (group)')),
+        k.label && h('span', { class: 'muted' }, k.label),
+        h('span', { class: 'kind-tag' }, kindLabel(k.kind))))))
+    : h('p', { class: 'empty' }, 'Not connected to anything.');
+}
+
+function connEditor(id, conns) {
+  return h('section', {}, h('h3', {}, 'Connections'),
+    conns.length
+      ? h('ul', { class: 'conn-edit' }, conns.map(({ k, out, other, otherKind }) => h('li', {},
+        h('span', { class: 'conn-name' }, `${out ? '→' : '←'} ${other.name}`, otherKind === 'group' && h('span', { class: 'muted' }, ' (group)')),
+        h('select', {
+          'aria-label': `Kind of connection with ${other.name}`,
+          onchange: (e) => {
+            const kind = e.target.value;
+            if (isDuplicateConnection(state.data.connections, k.from, k.to, kind, k.id)) {
+              toast('These are already connected with that kind.');
+              e.target.value = k.kind;
+              return;
+            }
+            commit((dd) => { dd.connections.find((x) => x.id === k.id).kind = kind; }, { sidebar: false });
+          },
+        }, CONN_KINDS.map((K) => h('option', { value: K.id, selected: K.id === k.kind }, K.label))),
+        h('input', {
+          value: k.label, placeholder: 'Label', 'aria-label': `Label for connection with ${other.name}`,
+          onchange: (e) => commit((dd) => { dd.connections.find((x) => x.id === k.id).label = e.target.value.trim(); }, { panel: false, sidebar: false }),
+        }),
+        h('button', {
+          type: 'button', class: 'icon-btn', 'aria-label': `Remove connection with ${other.name}`,
+          onclick: () => commit((dd) => { dd.connections = dd.connections.filter((x) => x.id !== k.id); }),
+        }, '×'))))
+      : h('p', { class: 'empty' }, 'Not connected to anything yet.'),
+    btn('Connect to…', () => startConnect(id), 'small'));
 }
 
 function copyLink(id) {
@@ -628,20 +649,20 @@ function copyLink(id) {
 function compView(c) {
   const L = layerById(c.layer);
   const conns = connectionsOf(c.id);
+  const info = state.data.typeInfo?.[c.type];
   return [
     panelHead(c.name, `${typeLabel(c.type)} in ${L.name}`, thumbs.get(c.type, compColor(c))),
     c.description && h('p', { class: 'desc' }, c.description),
     c.links.length > 0 && h('section', {}, h('h3', {}, 'Links'),
       h('ul', { class: 'links' }, c.links.map((l) => h('li', {},
         h('a', { href: l.url, target: '_blank', rel: 'noopener noreferrer' }, l.label || l.url))))),
-    h('section', {}, h('h3', {}, 'Connections'),
-      conns.length
-        ? h('ul', { class: 'conns' }, conns.map(({ k, out, other }) => h('li', {},
-          h('button', { type: 'button', class: 'conn', onclick: () => goTo(other.id) },
-            h('span', { class: 'dir', 'aria-label': out ? 'to' : 'from' }, out ? '→' : '←'),
-            h('span', {}, other.name),
-            k.label && h('span', { class: 'muted' }, k.label)))))
-        : h('p', { class: 'empty' }, 'Not connected to anything.')),
+    c.properties.length > 0 && h('section', {}, h('h3', {}, 'Properties'),
+      h('table', { class: 'props' }, h('tbody', {}, c.properties.map((p) => h('tr', {},
+        h('th', { scope: 'row' }, p.key), h('td', {}, p.value)))))),
+    info && h('section', {}, h('h3', {}, 'About this type'),
+      h('p', { class: 'desc' }, info.summary),
+      info.formerly && h('p', { class: 'muted' }, `Formerly: ${info.formerly}`)),
+    h('section', {}, h('h3', {}, 'Connections'), connList(conns)),
     h('div', { class: 'panel-actions' }, btn('Focus', () => scene.focusComponent(c.id)), btn('Copy link', () => copyLink(c.id), 'ghost')),
   ];
 }
@@ -698,12 +719,23 @@ function linksEditor(links, onMut) {
     btn('Add link', () => onMut((ls) => ls.push({ label: '', url: '' }), true), 'small ghost'));
 }
 
+function propsEditor(props, onMut) {
+  const row = (p, i) => h('div', { class: 'prop-row' },
+    h('input', { value: p.key, placeholder: 'Property', 'aria-label': `Property ${i + 1} name`, onchange: (e) => onMut((ps) => { ps[i].key = e.target.value.trim(); }, false) }),
+    h('input', { value: p.value, placeholder: 'Value', 'aria-label': `Property ${i + 1} value`, onchange: (e) => onMut((ps) => { ps[i].value = e.target.value.trim(); }, false) }),
+    h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Move property ${i + 1} up`, disabled: i === 0, onclick: () => onMut((ps) => { [ps[i - 1], ps[i]] = [ps[i], ps[i - 1]]; }, true) }, '↑'),
+    h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Move property ${i + 1} down`, disabled: i === props.length - 1, onclick: () => onMut((ps) => { [ps[i + 1], ps[i]] = [ps[i], ps[i + 1]]; }, true) }, '↓'),
+    h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Remove property ${i + 1}`, onclick: () => onMut((ps) => ps.splice(i, 1), true) }, '×'));
+  return h('section', { class: 'props-edit' }, h('h3', {}, 'Properties'),
+    props.map(row),
+    btn('Add property', () => onMut((ps) => ps.push({ key: '', value: '' }), true), 'small ghost'));
+}
+
 function compEdit(c) {
   const id = c.id;
   const d = state.data;
   const upd = (fn, opts) => commit((dd) => fn(compById(id, dd), dd), opts);
   const quiet = { rebuild: false, panel: false, sidebar: false };
-  const conns = connectionsOf(id);
   return [
     panelHead('Edit component', `${typeLabel(c.type)} in ${layerById(c.layer).name}`, thumbs.get(c.type, compColor(c))),
     field('Name', h('input', {
@@ -718,6 +750,7 @@ function compEdit(c) {
     field('Layer', selectEl(d.layers.map((L) => [L.id, L.name]), c.layer, (v) => upd((x) => { x.layer = v; }))),
     field('Description', h('textarea', { rows: 3, value: c.description, onchange: (e) => upd((x) => { x.description = e.target.value; }, quiet) })),
     linksEditor(c.links, (mut, structural) => upd((x) => mut(x.links), { rebuild: false, panel: structural, sidebar: false })),
+    propsEditor(c.properties, (mut, structural) => upd((x) => mut(x.properties), { rebuild: false, panel: structural, sidebar: false })),
     h('div', { class: 'grid2' },
       field('Position X', numberInput(c.x, (v) => upd((x) => { x.x = v; }, { panel: false, sidebar: false }))),
       field('Position Z', numberInput(c.z, (v) => upd((x) => { x.z = v; }, { panel: false, sidebar: false })))),
@@ -736,39 +769,47 @@ function compEdit(c) {
         if (v) dd.typeIcons[c.type] = v; else delete dd.typeIcons[c.type];
       }, { panel: false, sidebar: false }),
     })),
-    h('section', {}, h('h3', {}, 'Connections'),
-      conns.length
-        ? h('ul', { class: 'conn-edit' }, conns.map(({ k, out, other }) => h('li', {},
-          h('span', { class: 'conn-name' }, `${out ? '→' : '←'} ${other.name}`),
-          h('input', {
-            value: k.label, placeholder: 'Label', 'aria-label': `Label for connection with ${other.name}`,
-            onchange: (e) => commit((dd) => { dd.connections.find((x) => x.id === k.id).label = e.target.value.trim(); }, { panel: false, sidebar: false }),
-          }),
-          h('button', {
-            type: 'button', class: 'icon-btn', 'aria-label': `Remove connection with ${other.name}`,
-            onclick: () => commit((dd) => { dd.connections = dd.connections.filter((x) => x.id !== k.id); }),
-          }, '×'))))
-        : h('p', { class: 'empty' }, 'Not connected to anything yet.'),
-      btn('Connect to another component', () => startConnect(id), 'small')),
+    field(`Explanation for all “${typeLabel(c.type)}” models`, h('textarea', {
+      rows: 4, value: d.typeInfo?.[c.type]?.summary || '', placeholder: 'What is this, in a sentence or two?',
+      onchange: (e) => {
+        const v = e.target.value.trim();
+        commit((dd) => {
+          dd.typeInfo ||= {};
+          if (v) dd.typeInfo[c.type] = { summary: v, formerly: dd.typeInfo[c.type]?.formerly || null };
+          else delete dd.typeInfo[c.type];
+        }, { rebuild: false, panel: !!v !== !!d.typeInfo?.[c.type], sidebar: false });
+      },
+    }), 'Shown on every component of this model. Leave empty to remove it.'),
+    field('Formerly', h('input', {
+      value: d.typeInfo?.[c.type]?.formerly || '', placeholder: 'Previous name, if any',
+      disabled: !d.typeInfo?.[c.type],
+      onchange: (e) => commit((dd) => {
+        if (dd.typeInfo?.[c.type]) dd.typeInfo[c.type].formerly = e.target.value.trim() || null;
+      }, { rebuild: false, panel: false, sidebar: false }),
+    }), 'Needs an explanation first.'),
+    connEditor(id, connectionsOf(id)),
     h('div', { class: 'panel-actions' },
       btn('Focus', () => scene.focusComponent(id), 'ghost'),
       btn('Delete component', deleteSelection, 'danger')),
   ];
 }
 
-function groupMembers(g) {
-  return state.data.components.filter((c) => c.layer === g.layer && Math.abs(c.x - g.x) <= g.w / 2 && Math.abs(c.z - g.z) <= g.d / 2);
-}
-
 function groupView(g) {
-  const members = groupMembers(g);
+  const { groups, components } = state.data;
+  const parent = groupParent(groups, g);
+  const kids = childGroups(groups, g);
+  const members = groupMembers(components, g);
+  const groupLink = (x) => h('li', {}, h('button', { type: 'button', class: 'conn', onclick: () => goTo(x.id) }, h('span', {}, x.name), h('span', { class: 'muted' }, 'Group')));
   return [
     panelHead(g.name, `Group in ${layerById(g.layer).name}`),
     g.description && h('p', { class: 'desc' }, g.description),
-    h('section', {}, h('h3', {}, `Contains ${members.length}`),
+    parent && h('section', {}, h('h3', {}, 'Inside'), h('ul', { class: 'conns' }, groupLink(parent))),
+    kids.length > 0 && h('section', {}, h('h3', {}, 'Groups inside'), h('ul', { class: 'conns' }, kids.map(groupLink))),
+    h('section', {}, h('h3', {}, 'Contains'),
       members.length
         ? h('ul', { class: 'conns' }, members.map((c) => h('li', {}, h('button', { type: 'button', class: 'conn', onclick: () => goTo(c.id) }, h('span', {}, c.name), h('span', { class: 'muted' }, typeLabel(c.type))))))
         : h('p', { class: 'empty' }, 'No components inside this group.')),
+    h('section', {}, h('h3', {}, 'Connections'), connList(connectionsOf(g.id))),
     h('div', { class: 'panel-actions' }, btn('Focus', () => scene.focusGroup(g.id)), btn('Copy link', () => copyLink(g.id), 'ghost')),
   ];
 }
@@ -791,10 +832,11 @@ function groupEdit(g) {
     field('Colour', h('input', { type: 'color', value: g.color || layer.color, onchange: (e) => upd((x) => { x.color = e.target.value; }) })),
     g.color && btn('Use layer colour', () => upd((x) => { x.color = null; }), 'link'),
     h('p', { class: 'hint' }, 'Dragging a group moves the components inside it.'),
+    connEditor(id, connectionsOf(id)),
     h('div', { class: 'panel-actions' },
       btn('Focus', () => scene.focusGroup(id), 'ghost'),
       btn('Delete group', deleteSelection, 'danger')),
-    h('p', { class: 'hint' }, 'Deleting a group keeps its components.'),
+    h('p', { class: 'hint' }, 'Deleting a group keeps its components and removes its connections.'),
   ];
 }
 
@@ -859,6 +901,7 @@ async function importFile(file) {
   try {
     const { data, warnings } = normalize(JSON.parse(await file.text()));
     exitStory();
+    clearPreview();
     endConnect();
     pushUndo();
     state.data = data;
@@ -882,6 +925,7 @@ async function importFile(file) {
 function discardDraft() {
   if (!confirm('Discard your unsaved changes and go back to the published map?')) return;
   exitStory();
+  clearPreview();
   pushUndo();
   state.data = clone(state.published);
   state.exported = false;
@@ -906,6 +950,7 @@ function setEditMode(on) {
   if (!on) {
     endConnect();
     state.editingStory = null;
+    if (!state.story) clearPreview();
   }
   renderSidebar();
   renderPanel();
@@ -920,21 +965,25 @@ function runSearch() {
   const q = $('#search').value.trim().toLowerCase();
   const box = $('#searchResults');
   if (!q) { box.hidden = true; box.replaceChildren(); return; }
-  const res = state.data.components.filter((c) => c.name.toLowerCase().includes(q)
+  const comps = state.data.components.filter((c) => c.name.toLowerCase().includes(q)
     || typeLabel(c.type).toLowerCase().includes(q)
-    || c.description.toLowerCase().includes(q)).slice(0, 8);
+    || c.description.toLowerCase().includes(q))
+    .map((c) => ({ id: c.id, name: c.name, what: typeLabel(c.type), layer: c.layer }));
+  const groups = state.data.groups.filter((g) => g.name.toLowerCase().includes(q) || g.description.toLowerCase().includes(q))
+    .map((g) => ({ id: g.id, name: g.name, what: 'Group', layer: g.layer }));
+  const res = [...comps, ...groups].slice(0, 8);
   box.hidden = false;
   box.replaceChildren(...(res.length
-    ? res.map((c) => h('button', { type: 'button', class: 'result', onclick: () => pickResult(c.id) },
-      h('span', {}, c.name), h('span', { class: 'muted' }, `${typeLabel(c.type)}, ${layerById(c.layer).name}`)))
-    : [h('p', { class: 'empty' }, 'No components match.')]));
+    ? res.map((r) => h('button', { type: 'button', class: 'result', onclick: () => pickResult(r.id) },
+      h('span', {}, r.name), h('span', { class: 'muted' }, `${r.what}, ${layerById(r.layer).name}`)))
+    : [h('p', { class: 'empty' }, 'Nothing matches.')]));
 }
 
 function pickResult(id) {
   $('#search').value = '';
   runSearch();
-  const c = compById(id);
-  if (c && scene.hiddenLayers.has(c.layer)) { scene.setLayerVisible(c.layer, true); renderSidebar(); }
+  const layer = endpointLayer(state.data, id);
+  if (layer && scene.hiddenLayers.has(layer)) { scene.setLayerVisible(layer, true); renderSidebar(); }
   closeSidebarOnNarrow();
   goTo(id);
 }
@@ -1002,7 +1051,7 @@ function onKey(e) {
     if (typing) { e.target.blur(); return; }
     if (state.connectFrom) endConnect();
     else if (state.story) exitStory();
-    else { select([], null); scene.setHighlight(null); }
+    else { select([], null); clearPreview(); }
     return;
   }
   if (typing) return;
@@ -1034,8 +1083,7 @@ function onKey(e) {
 function handleHash() {
   const id = decodeURIComponent(window.location.hash.slice(1));
   if (!id) return;
-  if (compById(id)) goTo(id);
-  else if (groupById(id)) { select([id], 'group'); scene.focusGroup(id); }
+  if (entityById(id)) goTo(id);
   else if (storyById(id)) playStory(id);
 }
 

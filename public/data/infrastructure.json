@@ -1,24 +1,34 @@
 {
   "version": 1,
   "meta": {
-    "title": "Example Corp infrastructure",
-    "layerGap": 10,
+    "title": "VCF 5.x reference architecture (VCF 5.2, NSX, vSphere Supervisor)",
+    "layerGap": 8,
     "updated": "2026-11-26T00:00:00.000Z"
   },
   "layers": [
     {
-      "id": "hardware",
-      "name": "Hardware",
+      "id": "physical",
+      "name": "Physical",
       "color": "#A0A8B5"
     },
     {
-      "id": "network",
-      "name": "Network",
+      "id": "phys-network",
+      "name": "Physical network",
       "color": "#2FBF9F"
     },
     {
-      "id": "platform",
-      "name": "Platform",
+      "id": "virtual-infra",
+      "name": "Virtual infrastructure",
+      "color": "#E8A04C"
+    },
+    {
+      "id": "nsx-overlay",
+      "name": "NSX overlay",
+      "color": "#E0679E"
+    },
+    {
+      "id": "workload",
+      "name": "Workload platform",
       "color": "#9B87F5"
     },
     {
@@ -28,741 +38,2277 @@
     }
   ],
   "typeIcons": {},
+  "typeInfo": {
+    "esxi-host": {
+      "summary": "ESXi is the virtualization platform on which virtual machines and virtual appliances are created and run; VCF 5.2 ships ESXi 8.0 Update 3. ESXi is installed on a host first, and the host is then commissioned into the SDDC Manager inventory before it can be used in a domain. NSX kernel modules inside the hypervisor provide distributed routing and the distributed firewall, and every host in a Supervisor cluster with NSX is prepared as an NSX transport node. On a Supervisor, each host also runs Spherelet, a kubelet ported natively to ESXi that makes the host part of the Kubernetes cluster."
+    },
+    "sddc-manager": {
+      "summary": "SDDC Manager runs as an appliance in the management domain and performs full lifecycle management: deployment, configuration, patching and upgrades (in VCF 5.2, NSX is upgraded to 4.2 through it). It automates the creation of VI workload domains and their vSphere clusters, deploys NSX Edge clusters, and handles certificates, password rotation and backup configuration. It does not install ESXi: hosts are installed first and then commissioned into its inventory. The management domain itself is created at bring-up by VMware Cloud Builder."
+    },
+    "vcenter": {
+      "summary": "vCenter Server is the central administrator for the ESXi hosts connected to it. In VCF each workload domain has its own dedicated vCenter Server, and all vCenter Server instances run in the management domain; when a VI workload domain is created, VCF deploys its vCenter there. vCenter also holds the management plane of the vSphere Distributed Switch and the Cloud Native Storage (CNS) control plane."
+    },
+    "nsx-manager": {
+      "summary": "NSX Manager hosts the API services, the management plane and the central control plane; a cluster of NSX Manager appliances gives the UI and API high availability. The local control plane runs on every transport node (hosts and Edges). In VCF, SDDC Manager deploys a three-node NSX Manager cluster in the management domain for the first VI workload domain; VI workload domains cannot use the management domain's NSX Manager cluster. With Supervisor, the NSX Container Plugin (NCP) talks to NSX Manager and to the Kubernetes control plane.",
+      "formerly": "VMware NSX-T Data Center (renamed VMware NSX with release 4.0.0.1)."
+    },
+    "nsx-edge": {
+      "summary": "NSX Edge nodes are service appliances (VM or bare metal) that run network services that cannot be distributed to the hypervisors, including the service router (SR) of each gateway that is tied to the Edge cluster. An Edge cluster is a group of Edge nodes with the same settings that provides high availability; SDDC Manager creates it from Edge node VMs on a vSphere cluster you select. A Supervisor with NSX needs an Edge cluster of two Large Edge nodes, and the Edges connect external networks to Supervisor objects."
+    },
+    "vsan-datastore": {
+      "summary": "vSAN is a distributed layer of software that runs natively as part of the ESXi hypervisor. It aggregates the hosts' local capacity devices into one datastore shared by all hosts in the vSAN cluster. Supervisor storage policies can place volumes on vSAN, and ReadWriteOnce container volumes are backed by First Class Disks on a datastore such as vSAN."
+    },
+    "vds": {
+      "summary": "A vSphere Distributed Switch configures the networking of many hosts from one place: its management plane lives on vCenter Server, and the data plane on each host is the host proxy switch. NSX runs directly on the VDS (version 7 or later), the recommended way on ESXi hosts. With Supervisor on NSX, the segments for each namespace live on the VDS."
+    },
+    "t0-gateway": {
+      "summary": "A Tier-0 gateway provides north-south connectivity: it connects to the physical routers and can run BGP with them. Every gateway has a distributed router (DR) on all transport nodes and a service router (SR) on the Edge cluster nodes. When SDDC Manager deploys an Edge cluster for Workload Management (Supervisor), the Tier-0 must be Active-Active, which load-balances traffic across all Edge members."
+    },
+    "t1-gateway": {
+      "summary": "A Tier-1 gateway connects to one Tier-0 gateway for northbound connectivity of the subnets attached to it. Its distributed router runs on every transport node, including the hypervisors. Stateful services such as NAT or a load balancer need an Edge cluster, which creates a service router on the Edges. With Supervisor on NSX, NCP creates one shared Tier-1 for the system namespaces and, by default, a Tier-1 gateway and load balancer for each vSphere Namespace."
+    },
+    "segment": {
+      "summary": "A segment provides virtual Layer 2 switching for VM and gateway interfaces and spans many hypervisors. Overlay segments use Geneve encapsulation, so the VM network topology is separate from the physical network. Each vSphere Namespace has its own network, carved from the namespace network CIDRs, and a VKS cluster's segments are defined within its namespace's Tier-1 gateway.",
+      "formerly": "Logical switch."
+    },
+    "dfw": {
+      "summary": "The Distributed Firewall is deployed on each ESXi host, in the NSX kernel modules, and a firewall is instantiated on each virtual NIC, so traffic is filtered as close to its source as possible. On an NSX-based Supervisor, namespace security policies protect traffic for vSphere Pods and VMs (including VKS node VMs), and Kubernetes NetworkPolicy on the Supervisor needs NSX networking. In vSphere 8.0 U3 the NSX DFW license is a separate add-on; without it NCP cannot add rules on NSX Manager, so new Supervisor security and network policies do not work."
+    },
+    "nsx-lb": {
+      "summary": "The NSX load balancer distributes incoming requests across servers for high availability. It is supported only on a Tier-1 gateway and runs in the Tier-1 service router on the Edges. With Supervisor on NSX, NCP creates a load balancer for each namespace by default, and the Edge cluster's load balancer also gives redundancy for the Supervisor Kubernetes API servers. With the NSX load balancer, a LoadBalancer Service in a VKS cluster maps to an NSX virtual server. It is one option: a Supervisor with NSX can use VMware Avi Load Balancer instead, and Broadcom recommends Avi for general-purpose and advanced load balancing.",
+      "formerly": "NSX-T load balancer, the name the vSphere 8.0 Supervisor docs still use (NSX was called NSX-T Data Center until release 4.0.0.1). The alternative, VMware Avi Load Balancer, was VMware NSX Advanced Load Balancer."
+    },
+    "supervisor-cp": {
+      "summary": "vSphere Supervisor creates a Kubernetes control plane inside the hypervisor layer of a vSphere cluster. It has three control plane VMs; vSphere DRS decides which ESXi hosts they run on and migrates them when needed (they are system-managed, so you cannot migrate them manually). The Supervisor cluster must have vSphere HA and DRS enabled, with DRS fully automated. NCP runs in the Supervisor and talks to NSX Manager and the Kubernetes control plane.",
+      "formerly": "vSphere with Tanzu; the vCenter 8.0 U3 release notes call it vSphere IaaS control plane."
+    },
+    "vks-cluster": {
+      "summary": "A VKS cluster is a Kubernetes cluster run by vSphere Kubernetes Service (VKS). It is defined as a Cluster API Cluster (cluster.x-k8s.io/v1beta1) whose topology uses a versioned ClusterClass such as builtin-generic-v3.3.0; Cluster API gives declarative, Kubernetes-style cluster management. The VM Service manages its control plane and worker node VMs. Antrea is the default CNI (Calico is the other option), and a paravirtual CSI (pvCSI) plug-in sends persistent volume requests to the Supervisor and Cloud Native Storage. Kubernetes releases for VKS are called vSphere Kubernetes releases (VKr). From vCenter 8.0 U3, VKS can be upgraded on its own, without upgrading the Supervisor or vCenter.",
+      "formerly": "VKS was VMware Tanzu Kubernetes Grid (TKG) Service, and a VKS cluster was called a TKG cluster. Clusters could also be defined with the older TanzuKubernetesCluster (TKC) API, deprecated in TKG Service 3.2. VKr was called Tanzu Kubernetes release (TKr)."
+    },
+    "vsphere-pod": {
+      "summary": "A vSphere Pod is a VM with a small footprint that runs one or more Linux containers, with its own Linux kernel based on the Photon OS kernel. Spherelet, a kubelet ported to ESXi, lets the hosts run pods as part of the Supervisor's Kubernetes cluster. vSphere Pods can be deployed only on Supervisors with NSX networking. Namespace security policies protect their traffic, and the namespace's storage policies decide where their persistent volumes are placed."
+    },
+    "registry": {
+      "summary": "Harbor is an open source cloud-native registry for your workloads, installed here as a Supervisor Service. It needs Contour as its ingress controller, so Contour is installed as a Supervisor Service first. VKS clusters on the same Supervisor as Harbor trust it automatically."
+    },
+    "vm": {
+      "summary": "A virtual machine runs a guest OS on a hypervisor host. On a Supervisor, the VM Service deploys and runs stand-alone VMs and manages the control plane and worker node VMs of VKS clusters. A VM class is a template for CPU, memory and reservations; DevOps engineers can use only the VM classes associated with their namespace."
+    },
+    "ups": {
+      "summary": "An uninterruptible power supply keeps equipment powered for a short time during a mains power failure."
+    },
+    "switch": {
+      "summary": "Top-of-rack (leaf) switches connect the servers in a rack; spine/core switches connect the racks to each other."
+    },
+    "router": {
+      "summary": "An edge router connects the data centre network to outside networks and exchanges routes with them. Here it is the BGP peer of the NSX Tier-0 gateway."
+    },
+    "firewall": {
+      "summary": "A perimeter firewall filters traffic between the outside world and the data centre."
+    },
+    "users": {
+      "summary": "Users are the people or client systems that reach the applications from outside the data centre."
+    },
+    "web-app": {
+      "summary": "A web app serves the user-facing front end. Here it runs as Kubernetes workloads in the VKS cluster team-a-prod."
+    },
+    "api-service": {
+      "summary": "An API service provides back-end functions to the web app over HTTP. Here it runs as Kubernetes workloads in the VKS cluster team-a-prod."
+    }
+  },
   "groups": [
     {
-      "id": "g-dc1",
-      "name": "Data centre 1",
-      "layer": "hardware",
-      "x": -11.5,
-      "z": -0.5,
-      "w": 13,
-      "d": 12,
-      "description": "Primary data centre, rack row A.",
+      "id": "g-rack-mgmt",
+      "name": "Management rack",
+      "layer": "physical",
+      "x": -17,
+      "z": 2,
+      "w": 26,
+      "d": 14,
+      "description": "Rack with the four ESXi hosts of the management domain. VCF needs at least four hosts in the management domain.",
       "color": null
     },
     {
-      "id": "g-office",
-      "name": "Head office",
-      "layer": "hardware",
-      "x": 10,
-      "z": 0.5,
-      "w": 9,
-      "d": 10,
-      "description": "Head office comms room and desks.",
+      "id": "g-rack-wld01",
+      "name": "WLD-01 rack",
+      "layer": "physical",
+      "x": 21,
+      "z": 2,
+      "w": 36,
+      "d": 14,
+      "description": "Rack with the four ESXi hosts of workload domain WLD-01. A Supervisor with NSX networking on vSAN needs at least four hosts.",
       "color": null
     },
     {
-      "id": "g-perimeter",
-      "name": "Perimeter",
-      "layer": "network",
-      "x": -10,
-      "z": 6,
-      "w": 17,
-      "d": 5,
-      "description": "Internet-facing network devices.",
-      "color": null
-    },
-    {
-      "id": "g-prod",
-      "name": "Production",
-      "layer": "platform",
-      "x": -7,
-      "z": 0.5,
-      "w": 20,
-      "d": 12,
-      "description": "Customer-facing platform services.",
-      "color": null
-    },
-    {
-      "id": "g-tools",
-      "name": "Internal tooling",
-      "layer": "platform",
-      "x": 9.5,
+      "id": "g-mgmt-domain",
+      "name": "Management domain",
+      "layer": "virtual-infra",
+      "x": -17,
       "z": 0,
-      "w": 7,
-      "d": 10,
-      "description": "Platform for internal tools.",
+      "w": 30,
+      "d": 20,
+      "description": "The VCF management domain. It holds the management appliances for every domain: SDDC Manager, all vCenter Servers and the NSX Manager clusters.",
+      "color": null
+    },
+    {
+      "id": "g-mgmt-cluster",
+      "name": "Management cluster",
+      "layer": "virtual-infra",
+      "x": -17,
+      "z": 1,
+      "w": 26,
+      "d": 15,
+      "description": "The vSphere cluster of the management domain, with its own vSAN datastore and VDS. The WLD-01 vCenter and NSX Manager cluster also run here.",
+      "color": null
+    },
+    {
+      "id": "g-wld01-domain",
+      "name": "Workload domain WLD-01",
+      "layer": "virtual-infra",
+      "x": 21,
+      "z": 0,
+      "w": 40,
+      "d": 20,
+      "description": "VI workload domain WLD-01, created by SDDC Manager. Its vCenter and NSX Manager cluster run in the management domain; its hosts run the workloads and the NSX Edge cluster.",
+      "color": null
+    },
+    {
+      "id": "g-wld01-cluster",
+      "name": "WLD-01 cluster",
+      "layer": "virtual-infra",
+      "x": 21,
+      "z": 1,
+      "w": 36,
+      "d": 15,
+      "description": "The vSphere cluster of WLD-01, with vSphere HA and DRS (fully automated) enabled. Supervisor is enabled on this cluster.",
+      "color": null
+    },
+    {
+      "id": "g-edge-cluster",
+      "name": "Edge cluster",
+      "layer": "virtual-infra",
+      "x": 30,
+      "z": 1.5,
+      "w": 12,
+      "d": 9,
+      "description": "NSX Edge cluster of two Edge node VMs, deployed by SDDC Manager on the WLD-01 cluster. The Tier-0 and Tier-1 service routers and load balancers run here.",
+      "color": null
+    },
+    {
+      "id": "g-sup-net",
+      "name": "Supervisor system networking",
+      "layer": "nsx-overlay",
+      "x": 13,
+      "z": -4,
+      "w": 15,
+      "d": 7,
+      "description": "The shared Tier-1 gateway, segment and load balancer that NCP creates for the Supervisor system namespaces.",
+      "color": null
+    },
+    {
+      "id": "g-ns-a-net",
+      "name": "ns-team-a network",
+      "layer": "nsx-overlay",
+      "x": 13,
+      "z": 5,
+      "w": 15,
+      "d": 7,
+      "description": "Networking that NCP created for vSphere Namespace team-a: its own Tier-1 gateway, segment and NSX load balancer.",
+      "color": null
+    },
+    {
+      "id": "g-ns-b-net",
+      "name": "ns-team-b network",
+      "layer": "nsx-overlay",
+      "x": 29,
+      "z": 5,
+      "w": 14,
+      "d": 7,
+      "description": "Networking that NCP created for vSphere Namespace team-b: its own Tier-1 gateway, segment and NSX load balancer.",
+      "color": null
+    },
+    {
+      "id": "g-supervisor",
+      "name": "Supervisor (WLD-01 cluster)",
+      "layer": "workload",
+      "x": 21,
+      "z": 1,
+      "w": 34,
+      "d": 20,
+      "description": "vSphere Supervisor enabled on the WLD-01 cluster: a Kubernetes control plane inside the hypervisor layer, divided into vSphere Namespaces. Supervisor-wide settings are listed on Supervisor control plane VM 1.",
+      "color": null
+    },
+    {
+      "id": "g-ns-team-a",
+      "name": "Namespace: team-a",
+      "layer": "workload",
+      "x": 13,
+      "z": 5,
+      "w": 15,
+      "d": 9,
+      "description": "vSphere Namespace for team A, with its own network, permissions, storage policies, resource quota and VM classes. It hosts the VKS cluster team-a-prod.",
+      "color": null
+    },
+    {
+      "id": "g-ns-team-b",
+      "name": "Namespace: team-b",
+      "layer": "workload",
+      "x": 29,
+      "z": 5,
+      "w": 14,
+      "d": 9,
+      "description": "vSphere Namespace for team B. It runs a VM Service VM and a vSphere Pod.",
       "color": null
     }
   ],
   "components": [
     {
-      "id": "rack-a1",
-      "name": "Rack A1",
-      "type": "server-rack",
-      "layer": "hardware",
-      "x": -15,
-      "z": -4,
-      "description": "Compute nodes for the production Kubernetes cluster.",
-      "links": [
-        {
-          "label": "Asset record",
-          "url": "https://gitlab.example.internal/assets/rack-a1"
-        }
-      ],
+      "id": "esxi-mgmt-01",
+      "name": "esxi-mgmt-01",
+      "type": "esxi-host",
+      "layer": "physical",
+      "x": -26,
+      "z": 2,
+      "description": "ESXi host 1 of the management domain.",
+      "links": [],
       "color": null,
       "scale": 1,
-      "icon": null
+      "icon": null,
+      "properties": [
+        {
+          "key": "Domain",
+          "value": "Management"
+        },
+        {
+          "key": "Management IP",
+          "value": "10.10.10.11"
+        }
+      ]
     },
     {
-      "id": "rack-a2",
-      "name": "Rack A2",
-      "type": "server-rack",
-      "layer": "hardware",
-      "x": -11,
-      "z": -4,
-      "description": "Compute nodes for the production Kubernetes cluster.",
-      "links": [
-        {
-          "label": "Asset record",
-          "url": "https://gitlab.example.internal/assets/rack-a2"
-        }
-      ],
+      "id": "esxi-mgmt-02",
+      "name": "esxi-mgmt-02",
+      "type": "esxi-host",
+      "layer": "physical",
+      "x": -20,
+      "z": 2,
+      "description": "ESXi host 2 of the management domain.",
+      "links": [],
       "color": null,
       "scale": 1,
-      "icon": null
+      "icon": null,
+      "properties": [
+        {
+          "key": "Domain",
+          "value": "Management"
+        },
+        {
+          "key": "Management IP",
+          "value": "10.10.10.12"
+        }
+      ]
     },
     {
-      "id": "rack-a3",
-      "name": "Rack A3",
-      "type": "server-rack",
-      "layer": "hardware",
-      "x": -7,
-      "z": -4,
-      "description": "Database hosts and virtualisation hosts.",
-      "links": [
-        {
-          "label": "Asset record",
-          "url": "https://gitlab.example.internal/assets/rack-a3"
-        }
-      ],
+      "id": "esxi-mgmt-03",
+      "name": "esxi-mgmt-03",
+      "type": "esxi-host",
+      "layer": "physical",
+      "x": -14,
+      "z": 2,
+      "description": "ESXi host 3 of the management domain.",
+      "links": [],
       "color": null,
       "scale": 1,
-      "icon": null
+      "icon": null,
+      "properties": [
+        {
+          "key": "Domain",
+          "value": "Management"
+        },
+        {
+          "key": "Management IP",
+          "value": "10.10.10.13"
+        }
+      ]
     },
     {
-      "id": "san-01",
-      "name": "SAN-01",
-      "type": "storage-array",
-      "layer": "hardware",
-      "x": -11,
-      "z": 3,
-      "description": "Primary block and object storage. Replicated nightly to the DR site.",
-      "links": [
-        {
-          "label": "Runbook",
-          "url": "https://gitlab.example.internal/runbooks/san"
-        }
-      ],
+      "id": "esxi-mgmt-04",
+      "name": "esxi-mgmt-04",
+      "type": "esxi-host",
+      "layer": "physical",
+      "x": -8,
+      "z": 2,
+      "description": "ESXi host 4 of the management domain.",
+      "links": [],
       "color": null,
       "scale": 1,
-      "icon": null
+      "icon": null,
+      "properties": [
+        {
+          "key": "Domain",
+          "value": "Management"
+        },
+        {
+          "key": "Management IP",
+          "value": "10.10.10.14"
+        }
+      ]
+    },
+    {
+      "id": "esxi-wld01-01",
+      "name": "esxi-wld01-01",
+      "type": "esxi-host",
+      "layer": "physical",
+      "x": 9,
+      "z": 2,
+      "description": "ESXi host 1 of workload domain WLD-01. ESXi was installed first, then the host was commissioned into SDDC Manager before joining the domain.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Domain",
+          "value": "WLD-01"
+        },
+        {
+          "key": "Management IP",
+          "value": "10.10.30.11"
+        }
+      ]
+    },
+    {
+      "id": "esxi-wld01-02",
+      "name": "esxi-wld01-02",
+      "type": "esxi-host",
+      "layer": "physical",
+      "x": 17,
+      "z": 2,
+      "description": "ESXi host 2 of workload domain WLD-01. ESXi was installed first, then the host was commissioned into SDDC Manager before joining the domain.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Domain",
+          "value": "WLD-01"
+        },
+        {
+          "key": "Management IP",
+          "value": "10.10.30.12"
+        }
+      ]
+    },
+    {
+      "id": "esxi-wld01-03",
+      "name": "esxi-wld01-03",
+      "type": "esxi-host",
+      "layer": "physical",
+      "x": 25,
+      "z": 2,
+      "description": "ESXi host 3 of workload domain WLD-01. ESXi was installed first, then the host was commissioned into SDDC Manager before joining the domain.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Domain",
+          "value": "WLD-01"
+        },
+        {
+          "key": "Management IP",
+          "value": "10.10.30.13"
+        }
+      ]
+    },
+    {
+      "id": "esxi-wld01-04",
+      "name": "esxi-wld01-04",
+      "type": "esxi-host",
+      "layer": "physical",
+      "x": 33,
+      "z": 2,
+      "description": "ESXi host 4 of workload domain WLD-01. ESXi was installed first, then the host was commissioned into SDDC Manager before joining the domain.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Domain",
+          "value": "WLD-01"
+        },
+        {
+          "key": "Management IP",
+          "value": "10.10.30.14"
+        }
+      ]
     },
     {
       "id": "ups-01",
       "name": "UPS-01",
       "type": "ups",
-      "layer": "hardware",
-      "x": -16,
-      "z": 3,
-      "description": "Covers all of rack row A. About 25 minutes runtime at full load.",
+      "layer": "physical",
+      "x": -1,
+      "z": 2,
+      "description": "Uninterruptible power supply feeding both racks.",
       "links": [],
       "color": null,
       "scale": 1,
-      "icon": null
-    },
-    {
-      "id": "ws-01",
-      "name": "Ops workstation",
-      "type": "workstation",
-      "layer": "hardware",
-      "x": 8,
-      "z": -2,
-      "description": "Shared operations desk.",
-      "links": [],
-      "color": null,
-      "scale": 1,
-      "icon": null
-    },
-    {
-      "id": "ws-02",
-      "name": "Dev workstation",
-      "type": "workstation",
-      "layer": "hardware",
-      "x": 12,
-      "z": -2,
-      "description": "Developer desk.",
-      "links": [],
-      "color": null,
-      "scale": 1,
-      "icon": null
-    },
-    {
-      "id": "fs-01",
-      "name": "Office server",
-      "type": "server",
-      "layer": "hardware",
-      "x": 10,
-      "z": 3,
-      "description": "Hosts internal tooling VMs at head office.",
-      "links": [],
-      "color": null,
-      "scale": 1,
-      "icon": null
-    },
-    {
-      "id": "rtr-edge",
-      "name": "Edge router",
-      "type": "router",
-      "layer": "network",
-      "x": -16,
-      "z": 6,
-      "description": "Internet uplink from two providers.",
-      "links": [
+      "icon": null,
+      "properties": [
         {
-          "label": "Config repo",
-          "url": "https://gitlab.example.internal/network/edge-router"
+          "key": "Feeds",
+          "value": "Management rack, WLD-01 rack"
         }
-      ],
-      "color": null,
-      "scale": 1,
-      "icon": null
+      ]
     },
     {
-      "id": "fw-01",
-      "name": "Perimeter firewall",
-      "type": "firewall",
-      "layer": "network",
-      "x": -10,
-      "z": 6,
-      "description": "All inbound traffic passes through here.",
-      "links": [
-        {
-          "label": "Rule change process",
-          "url": "https://gitlab.example.internal/wiki/firewall-changes"
-        }
-      ],
-      "color": null,
-      "scale": 1,
-      "icon": null
-    },
-    {
-      "id": "lb-01",
-      "name": "Load balancer",
-      "type": "load-balancer",
-      "layer": "network",
-      "x": -4,
-      "z": 6,
-      "description": "Terminates TLS and routes to the Kubernetes ingress.",
-      "links": [],
-      "color": null,
-      "scale": 1,
-      "icon": null
-    },
-    {
-      "id": "sw-core",
-      "name": "Core switch",
+      "id": "tor-mgmt-a",
+      "name": "leaf-mgmt-a",
       "type": "switch",
-      "layer": "network",
-      "x": -10,
-      "z": -3,
-      "description": "Connects the data centre racks and the office link.",
-      "links": [
-        {
-          "label": "Port map",
-          "url": "https://gitlab.example.internal/network/core-switch"
-        }
-      ],
-      "color": null,
-      "scale": 1,
-      "icon": null
-    },
-    {
-      "id": "ap-office",
-      "name": "Office Wi-Fi",
-      "type": "access-point",
-      "layer": "network",
-      "x": 10,
-      "z": 0,
-      "description": "Staff wireless network.",
+      "layer": "phys-network",
+      "x": -20,
+      "z": 2,
+      "description": "Top-of-rack (leaf) switch A for the management rack.",
       "links": [],
       "color": null,
       "scale": 1,
-      "icon": null
+      "icon": null,
+      "properties": [
+        {
+          "key": "Rack",
+          "value": "Management"
+        }
+      ]
     },
     {
-      "id": "k8s-prod",
-      "name": "Production cluster",
-      "type": "k8s-cluster",
-      "layer": "platform",
-      "x": -8,
-      "z": -3,
-      "description": "Runs the customer-facing services.",
-      "links": [
+      "id": "tor-mgmt-b",
+      "name": "leaf-mgmt-b",
+      "type": "switch",
+      "layer": "phys-network",
+      "x": -14,
+      "z": 2,
+      "description": "Top-of-rack (leaf) switch B for the management rack; hosts connect to both leaves.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
         {
-          "label": "Cluster dashboard",
-          "url": "https://gitlab.example.internal/k8s/prod"
+          "key": "Rack",
+          "value": "Management"
+        }
+      ]
+    },
+    {
+      "id": "tor-wld01-a",
+      "name": "leaf-wld01-a",
+      "type": "switch",
+      "layer": "phys-network",
+      "x": 15,
+      "z": 2,
+      "description": "Top-of-rack (leaf) switch A for the WLD-01 rack.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Rack",
+          "value": "WLD-01"
+        }
+      ]
+    },
+    {
+      "id": "tor-wld01-b",
+      "name": "leaf-wld01-b",
+      "type": "switch",
+      "layer": "phys-network",
+      "x": 27,
+      "z": 2,
+      "description": "Top-of-rack (leaf) switch B for the WLD-01 rack; hosts connect to both leaves.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Rack",
+          "value": "WLD-01"
+        }
+      ]
+    },
+    {
+      "id": "spine-01",
+      "name": "spine-01",
+      "type": "switch",
+      "layer": "phys-network",
+      "x": -5,
+      "z": -3,
+      "description": "Spine/core switch 1. Connects the leaf switches of both racks.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Role",
+          "value": "Spine"
+        }
+      ]
+    },
+    {
+      "id": "spine-02",
+      "name": "spine-02",
+      "type": "switch",
+      "layer": "phys-network",
+      "x": 3,
+      "z": -3,
+      "description": "Spine/core switch 2. Connects the leaf switches of both racks.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Role",
+          "value": "Spine"
+        }
+      ]
+    },
+    {
+      "id": "edge-router",
+      "name": "edge-router",
+      "type": "router",
+      "layer": "phys-network",
+      "x": 4,
+      "z": -9,
+      "description": "Data centre edge router. BGP peer of the NSX Tier-0 gateway; exchanges routes with the outside networks.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "BGP ASN",
+          "value": "65000"
         },
         {
-          "label": "Deployment guide",
-          "url": "https://gitlab.example.internal/wiki/deploying"
+          "key": "Uplink to Tier-0",
+          "value": "172.16.10.0/28"
         }
-      ],
-      "color": null,
-      "scale": 1,
-      "icon": null
+      ]
     },
     {
-      "id": "db-orders",
-      "name": "Orders database",
-      "type": "database",
-      "layer": "platform",
-      "x": -15,
-      "z": 4,
-      "description": "PostgreSQL primary with one streaming replica.",
-      "links": [
+      "id": "fw-perimeter",
+      "name": "perimeter-fw",
+      "type": "firewall",
+      "layer": "phys-network",
+      "x": -4,
+      "z": -9,
+      "description": "Perimeter firewall between the outside world and the data centre.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
         {
-          "label": "Backups",
-          "url": "https://gitlab.example.internal/wiki/db-backups"
+          "key": "Inside network",
+          "value": "172.16.0.0/24"
         }
-      ],
-      "color": null,
-      "scale": 1,
-      "icon": null
+      ]
     },
     {
-      "id": "cache-01",
-      "name": "Session cache",
-      "type": "cache",
-      "layer": "platform",
-      "x": -9,
-      "z": 4,
-      "description": "In-memory cache for sessions and hot data.",
+      "id": "sddc-manager",
+      "name": "SDDC Manager",
+      "type": "sddc-manager",
+      "layer": "virtual-infra",
+      "x": -26,
+      "z": -2,
+      "description": "SDDC Manager appliance. Lifecycle management for the whole VCF instance: deploys workload domains and Edge clusters, and patches and upgrades the stack.",
       "links": [],
       "color": null,
       "scale": 1,
-      "icon": null
+      "icon": null,
+      "properties": [
+        {
+          "key": "Version",
+          "value": "VCF 5.2"
+        },
+        {
+          "key": "Management IP",
+          "value": "10.10.20.5"
+        }
+      ]
     },
     {
-      "id": "mq-01",
-      "name": "Order events",
-      "type": "queue",
-      "layer": "platform",
-      "x": -3,
-      "z": 4,
-      "description": "Order events for fulfilment and notifications.",
+      "id": "vc-mgmt",
+      "name": "vcenter-mgmt",
+      "type": "vcenter",
+      "layer": "virtual-infra",
+      "x": -20,
+      "z": -2,
+      "description": "vCenter Server for the management domain.",
       "links": [],
       "color": null,
       "scale": 1,
-      "icon": null
+      "icon": null,
+      "properties": [
+        {
+          "key": "Version",
+          "value": "vCenter 8.0 U3"
+        },
+        {
+          "key": "Manages",
+          "value": "Management domain"
+        },
+        {
+          "key": "Management IP",
+          "value": "10.10.20.10"
+        }
+      ]
     },
     {
-      "id": "s3-01",
-      "name": "Object storage",
-      "type": "object-storage",
-      "layer": "platform",
-      "x": 1,
-      "z": -3,
-      "description": "Images, documents, and backups.",
+      "id": "nsxm-mgmt",
+      "name": "nsx-mgmt",
+      "type": "nsx-manager",
+      "layer": "virtual-infra",
+      "x": -14,
+      "z": -2,
+      "description": "Three-node NSX Manager cluster for the management domain.",
       "links": [],
       "color": null,
       "scale": 1,
-      "icon": null
+      "icon": null,
+      "properties": [
+        {
+          "key": "Version",
+          "value": "NSX 4.2"
+        },
+        {
+          "key": "Nodes",
+          "value": "3"
+        },
+        {
+          "key": "Cluster VIP",
+          "value": "10.10.20.20"
+        }
+      ]
     },
     {
-      "id": "vm-ci",
-      "name": "CI runner VM",
-      "type": "vm",
-      "layer": "platform",
+      "id": "vsan-mgmt",
+      "name": "vsan-mgmt",
+      "type": "vsan-datastore",
+      "layer": "virtual-infra",
+      "x": -8,
+      "z": -2,
+      "description": "vSAN datastore of the management cluster, built from the four management hosts' local devices.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Hosts",
+          "value": "4"
+        }
+      ]
+    },
+    {
+      "id": "vc-wld01",
+      "name": "vcenter-wld01",
+      "type": "vcenter",
+      "layer": "virtual-infra",
+      "x": -20,
+      "z": 5,
+      "description": "vCenter Server for workload domain WLD-01. In VCF, workload domain vCenters run in the management domain.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Version",
+          "value": "vCenter 8.0 U3"
+        },
+        {
+          "key": "Manages",
+          "value": "Workload domain WLD-01"
+        },
+        {
+          "key": "Runs in",
+          "value": "Management cluster"
+        },
+        {
+          "key": "Management IP",
+          "value": "10.10.20.11"
+        }
+      ]
+    },
+    {
+      "id": "nsxm-wld01",
+      "name": "nsx-wld01",
+      "type": "nsx-manager",
+      "layer": "virtual-infra",
+      "x": -14,
+      "z": 5,
+      "description": "Three-node NSX Manager cluster for WLD-01. It runs in the management domain; WLD-01 cannot use the management domain's NSX Manager cluster.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Version",
+          "value": "NSX 4.2"
+        },
+        {
+          "key": "Nodes",
+          "value": "3"
+        },
+        {
+          "key": "Runs in",
+          "value": "Management cluster"
+        },
+        {
+          "key": "Cluster VIP",
+          "value": "10.10.20.21"
+        }
+      ]
+    },
+    {
+      "id": "vds-mgmt",
+      "name": "vds-mgmt",
+      "type": "vds",
+      "layer": "virtual-infra",
+      "x": -8,
+      "z": 5,
+      "description": "vSphere Distributed Switch of the management cluster, managed from vcenter-mgmt.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Hosts",
+          "value": "4"
+        }
+      ]
+    },
+    {
+      "id": "vsan-wld01",
+      "name": "vsan-wld01",
+      "type": "vsan-datastore",
+      "layer": "virtual-infra",
       "x": 9,
-      "z": -3,
-      "description": "Runs GitLab CI jobs.",
-      "links": [
-        {
-          "label": "Runner settings",
-          "url": "https://gitlab.example.internal/admin/runners"
-        }
-      ],
-      "color": null,
-      "scale": 1,
-      "icon": null
-    },
-    {
-      "id": "ctr-wiki",
-      "name": "Wiki container",
-      "type": "container",
-      "layer": "platform",
-      "x": 10,
-      "z": 3,
-      "description": "Hosts the internal wiki.",
+      "z": -1,
+      "description": "vSAN datastore of the WLD-01 cluster. Supervisor storage policies place persistent volumes here.",
       "links": [],
       "color": null,
       "scale": 1,
-      "icon": null
+      "icon": null,
+      "properties": [
+        {
+          "key": "Hosts",
+          "value": "4"
+        },
+        {
+          "key": "Storage policy",
+          "value": "wld01-vsan-default"
+        }
+      ]
+    },
+    {
+      "id": "vds-wld01",
+      "name": "vds-wld01",
+      "type": "vds",
+      "layer": "virtual-infra",
+      "x": 9,
+      "z": 5,
+      "description": "vSphere Distributed Switch of the WLD-01 cluster. NSX runs on it, and the namespace segments live on it.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Hosts",
+          "value": "4"
+        }
+      ]
+    },
+    {
+      "id": "edge-01",
+      "name": "edge-01",
+      "type": "nsx-edge",
+      "layer": "virtual-infra",
+      "x": 27.5,
+      "z": 2,
+      "description": "NSX Edge node VM 1 of the WLD-01 Edge cluster. Runs the gateways' service routers and the NSX load balancers.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Size",
+          "value": "Large"
+        },
+        {
+          "key": "Uplink IP",
+          "value": "172.16.10.2"
+        }
+      ]
+    },
+    {
+      "id": "edge-02",
+      "name": "edge-02",
+      "type": "nsx-edge",
+      "layer": "virtual-infra",
+      "x": 32.5,
+      "z": 2,
+      "description": "NSX Edge node VM 2 of the WLD-01 Edge cluster. Runs the gateways' service routers and the NSX load balancers.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Size",
+          "value": "Large"
+        },
+        {
+          "key": "Uplink IP",
+          "value": "172.16.10.3"
+        }
+      ]
+    },
+    {
+      "id": "t0",
+      "name": "t0-wld01",
+      "type": "t0-gateway",
+      "layer": "nsx-overlay",
+      "x": 28,
+      "z": -4,
+      "description": "Tier-0 gateway of WLD-01. Its service router runs on the Edge cluster; it peers with the edge router over eBGP. Active-Active, as Workload Management requires.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "HA mode",
+          "value": "Active-Active"
+        },
+        {
+          "key": "Local ASN",
+          "value": "65010"
+        },
+        {
+          "key": "BGP peer",
+          "value": "edge-router (ASN 65000)"
+        }
+      ]
+    },
+    {
+      "id": "dfw",
+      "name": "Distributed Firewall",
+      "type": "dfw",
+      "layer": "nsx-overlay",
+      "x": 34,
+      "z": -4,
+      "description": "The NSX Distributed Firewall of WLD-01. Enforced in each ESXi host's kernel at every virtual NIC, not in a central appliance.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Enforced in",
+          "value": "Each WLD-01 host (NSX kernel modules)"
+        }
+      ]
+    },
+    {
+      "id": "t1-sup",
+      "name": "t1-supervisor",
+      "type": "t1-gateway",
+      "layer": "nsx-overlay",
+      "x": 8,
+      "z": -4,
+      "description": "Shared Tier-1 gateway that NCP created for the Supervisor system namespaces.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Connected to",
+          "value": "t0-wld01"
+        }
+      ]
+    },
+    {
+      "id": "lb-sup",
+      "name": "lb-supervisor",
+      "type": "nsx-lb",
+      "layer": "nsx-overlay",
+      "x": 13,
+      "z": -4,
+      "description": "NSX load balancer on the shared Supervisor system Tier-1, created by NCP. The Edge cluster load balancer also gives redundancy for the Supervisor Kubernetes API servers.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "VIPs from",
+          "value": "Ingress CIDR 10.220.0.0/24"
+        }
+      ]
+    },
+    {
+      "id": "seg-sup",
+      "name": "seg-supervisor",
+      "type": "segment",
+      "layer": "nsx-overlay",
+      "x": 18,
+      "z": -4,
+      "description": "Overlay segment for the Supervisor system namespaces.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Subnet",
+          "value": "10.244.0.0/28"
+        }
+      ]
+    },
+    {
+      "id": "t1-ns-a",
+      "name": "t1-ns-team-a",
+      "type": "t1-gateway",
+      "layer": "nsx-overlay",
+      "x": 8,
+      "z": 5,
+      "description": "Tier-1 gateway that NCP created for namespace team-a. Connected to the Tier-0 and the namespace segment; its service router and load balancer run on the Edges.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Connected to",
+          "value": "t0-wld01"
+        },
+        {
+          "key": "Egress SNAT IP",
+          "value": "10.221.0.2"
+        }
+      ]
+    },
+    {
+      "id": "lb-ns-a",
+      "name": "lb-ns-team-a",
+      "type": "nsx-lb",
+      "layer": "nsx-overlay",
+      "x": 13,
+      "z": 5,
+      "description": "NSX load balancer for namespace team-a. The LoadBalancer Service of the web app in team-a-prod maps to a virtual server here.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "VIPs from",
+          "value": "Ingress CIDR 10.220.0.0/24"
+        },
+        {
+          "key": "Web app VIP",
+          "value": "10.220.0.10"
+        }
+      ]
+    },
+    {
+      "id": "seg-ns-a",
+      "name": "seg-ns-team-a",
+      "type": "segment",
+      "layer": "nsx-overlay",
+      "x": 18,
+      "z": 5,
+      "description": "Overlay segment of namespace team-a, defined within its Tier-1. The team-a-prod node VMs attach here.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Subnet",
+          "value": "10.244.0.16/28"
+        }
+      ]
+    },
+    {
+      "id": "t1-ns-b",
+      "name": "t1-ns-team-b",
+      "type": "t1-gateway",
+      "layer": "nsx-overlay",
+      "x": 24,
+      "z": 5,
+      "description": "Tier-1 gateway that NCP created for namespace team-b. Connected to the Tier-0 and the namespace segment.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Connected to",
+          "value": "t0-wld01"
+        },
+        {
+          "key": "Egress SNAT IP",
+          "value": "10.221.0.3"
+        }
+      ]
+    },
+    {
+      "id": "lb-ns-b",
+      "name": "lb-ns-team-b",
+      "type": "nsx-lb",
+      "layer": "nsx-overlay",
+      "x": 29,
+      "z": 5,
+      "description": "NSX load balancer for namespace team-b.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "VIPs from",
+          "value": "Ingress CIDR 10.220.0.0/24"
+        }
+      ]
+    },
+    {
+      "id": "seg-ns-b",
+      "name": "seg-ns-team-b",
+      "type": "segment",
+      "layer": "nsx-overlay",
+      "x": 34,
+      "z": 5,
+      "description": "Overlay segment of namespace team-b. The vSphere Pod and the VM Service VM attach here.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Subnet",
+          "value": "10.244.0.32/28"
+        }
+      ]
+    },
+    {
+      "id": "sup-cp-1",
+      "name": "Supervisor control plane VM 1",
+      "type": "supervisor-cp",
+      "layer": "workload",
+      "x": 8,
+      "z": -4,
+      "description": "One of the three Supervisor control plane VMs. vSphere DRS places it on a WLD-01 host. The Supervisor-wide settings are listed here.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "VKS version",
+          "value": "VKS 3.3.3"
+        },
+        {
+          "key": "vCenter",
+          "value": "vCenter 8.0 U3"
+        },
+        {
+          "key": "Management IPs",
+          "value": "10.10.20.30-10.10.20.34 (5 consecutive)"
+        },
+        {
+          "key": "Namespace network CIDR",
+          "value": "10.244.0.0/20 (prefix /28)"
+        },
+        {
+          "key": "Ingress CIDR",
+          "value": "10.220.0.0/24"
+        },
+        {
+          "key": "Egress CIDR",
+          "value": "10.221.0.0/24"
+        },
+        {
+          "key": "Services CIDR",
+          "value": "10.96.0.0/16"
+        },
+        {
+          "key": "Load balancer",
+          "value": "NSX load balancer"
+        }
+      ]
+    },
+    {
+      "id": "sup-cp-2",
+      "name": "Supervisor control plane VM 2",
+      "type": "supervisor-cp",
+      "layer": "workload",
+      "x": 13,
+      "z": -4,
+      "description": "One of the three Supervisor control plane VMs. vSphere DRS places it on a WLD-01 host.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": []
+    },
+    {
+      "id": "sup-cp-3",
+      "name": "Supervisor control plane VM 3",
+      "type": "supervisor-cp",
+      "layer": "workload",
+      "x": 18,
+      "z": -4,
+      "description": "One of the three Supervisor control plane VMs. vSphere DRS places it on a WLD-01 host.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": []
+    },
+    {
+      "id": "harbor",
+      "name": "Harbor",
+      "type": "registry",
+      "layer": "workload",
+      "x": 29,
+      "z": -4,
+      "description": "Harbor registry, installed as a Supervisor Service (with Contour as its ingress). VKS clusters on this Supervisor trust it automatically.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Installed as",
+          "value": "Supervisor Service"
+        },
+        {
+          "key": "Requires",
+          "value": "Contour Supervisor Service"
+        }
+      ]
+    },
+    {
+      "id": "vks-team-a-prod",
+      "name": "team-a-prod",
+      "type": "vks-cluster",
+      "layer": "workload",
+      "x": 8,
+      "z": 5.5,
+      "description": "VKS cluster in namespace team-a. Defined as a Cluster API Cluster; runs the web app and API.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "VKS version",
+          "value": "VKS 3.3.3"
+        },
+        {
+          "key": "API",
+          "value": "cluster.x-k8s.io/v1beta1 Cluster"
+        },
+        {
+          "key": "ClusterClass",
+          "value": "builtin-generic-v3.3.0"
+        },
+        {
+          "key": "CNI",
+          "value": "Antrea"
+        },
+        {
+          "key": "Control plane nodes",
+          "value": "3"
+        },
+        {
+          "key": "Worker nodes",
+          "value": "3"
+        },
+        {
+          "key": "Storage class",
+          "value": "wld01-vsan-default"
+        }
+      ]
+    },
+    {
+      "id": "vks-a-cp",
+      "name": "team-a-prod control plane VMs",
+      "type": "vm",
+      "layer": "workload",
+      "x": 13,
+      "z": 5.5,
+      "description": "The three control plane node VMs of team-a-prod (shown as one), managed by the VM Service.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Count",
+          "value": "3"
+        },
+        {
+          "key": "VM class",
+          "value": "best-effort-medium"
+        }
+      ]
+    },
+    {
+      "id": "vks-a-workers",
+      "name": "team-a-prod worker VMs",
+      "type": "vm",
+      "layer": "workload",
+      "x": 18,
+      "z": 5.5,
+      "description": "The three worker node VMs of team-a-prod (shown as one), managed by the VM Service. They attach to the team-a segment.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Count",
+          "value": "3"
+        },
+        {
+          "key": "VM class",
+          "value": "best-effort-large"
+        }
+      ]
+    },
+    {
+      "id": "vm-b-01",
+      "name": "vm-team-b-01",
+      "type": "vm",
+      "layer": "workload",
+      "x": 26,
+      "z": 5.5,
+      "description": "Stand-alone VM deployed through the VM Service in namespace team-b.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "VM class",
+          "value": "best-effort-small"
+        },
+        {
+          "key": "Namespace",
+          "value": "team-b"
+        }
+      ]
+    },
+    {
+      "id": "vsphere-pod-b",
+      "name": "batch-worker (vSphere Pod)",
+      "type": "vsphere-pod",
+      "layer": "workload",
+      "x": 32,
+      "z": 5.5,
+      "description": "A vSphere Pod in namespace team-b, run directly on the WLD-01 hosts through Spherelet.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
+        {
+          "key": "Namespace",
+          "value": "team-b"
+        }
+      ]
     },
     {
       "id": "users",
       "name": "Customers",
       "type": "users",
       "layer": "application",
-      "x": -16,
-      "z": 0,
-      "description": "People using the portal and mobile app.",
+      "x": 13,
+      "z": -4,
+      "description": "Customers reaching the web app from the internet.",
       "links": [],
       "color": null,
       "scale": 1,
-      "icon": null
+      "icon": null,
+      "properties": []
     },
     {
-      "id": "portal",
-      "name": "Customer portal",
+      "id": "web-app",
+      "name": "Shop web app",
       "type": "web-app",
       "layer": "application",
-      "x": -9,
-      "z": -3,
-      "description": "Main customer website.",
-      "links": [
+      "x": 10,
+      "z": 5,
+      "description": "Customer-facing web front end. Runs as Kubernetes workloads in team-a-prod, exposed through a LoadBalancer Service.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null,
+      "properties": [
         {
-          "label": "Open the portal",
-          "url": "https://portal.example.com"
+          "key": "Runs in",
+          "value": "team-a-prod"
         },
         {
-          "label": "Source code",
-          "url": "https://gitlab.example.internal/apps/portal"
+          "key": "Load balancer VIP",
+          "value": "10.220.0.10"
         }
-      ],
-      "color": null,
-      "scale": 1,
-      "icon": null
+      ]
     },
     {
-      "id": "mobile",
-      "name": "Mobile app",
-      "type": "mobile-app",
-      "layer": "application",
-      "x": -9,
-      "z": 4,
-      "description": "iOS and Android app.",
-      "links": [
-        {
-          "label": "Source code",
-          "url": "https://gitlab.example.internal/apps/mobile"
-        }
-      ],
-      "color": null,
-      "scale": 1,
-      "icon": null
-    },
-    {
-      "id": "orders-api",
+      "id": "api-service",
       "name": "Orders API",
       "type": "api-service",
       "layer": "application",
-      "x": -2,
-      "z": 0,
-      "description": "Creates and tracks orders.",
-      "links": [
-        {
-          "label": "API docs",
-          "url": "https://gitlab.example.internal/apps/orders-api/docs"
-        }
-      ],
-      "color": null,
-      "scale": 1,
-      "icon": null
-    },
-    {
-      "id": "payments",
-      "name": "Payment provider",
-      "type": "external-service",
-      "layer": "application",
-      "x": 5,
-      "z": 0,
-      "description": "Third-party card payments.",
+      "x": 16,
+      "z": 5,
+      "description": "Back-end API called by the web app. Runs as Kubernetes workloads in team-a-prod.",
       "links": [],
       "color": null,
       "scale": 1,
-      "icon": null
-    },
-    {
-      "id": "wiki",
-      "name": "Internal wiki",
-      "type": "web-app",
-      "layer": "application",
-      "x": 11,
-      "z": 0,
-      "description": "Team documentation.",
-      "links": [
+      "icon": null,
+      "properties": [
         {
-          "label": "Open the wiki",
-          "url": "https://gitlab.example.internal/wiki"
+          "key": "Runs in",
+          "value": "team-a-prod"
         }
-      ],
-      "color": null,
-      "scale": 1,
-      "icon": null
+      ]
     }
   ],
   "connections": [
     {
-      "id": "k-1",
-      "from": "users",
-      "to": "portal",
+      "id": "k-01",
+      "from": "ups-01",
+      "to": "g-rack-mgmt",
+      "kind": "power",
       "label": ""
     },
     {
-      "id": "k-2",
-      "from": "users",
-      "to": "mobile",
+      "id": "k-02",
+      "from": "ups-01",
+      "to": "g-rack-wld01",
+      "kind": "power",
       "label": ""
     },
     {
-      "id": "k-3",
-      "from": "portal",
-      "to": "orders-api",
-      "label": "REST"
-    },
-    {
-      "id": "k-4",
-      "from": "mobile",
-      "to": "orders-api",
-      "label": "REST"
-    },
-    {
-      "id": "k-5",
-      "from": "orders-api",
-      "to": "payments",
-      "label": "HTTPS"
-    },
-    {
-      "id": "k-6",
-      "from": "portal",
-      "to": "k8s-prod",
+      "id": "k-03",
+      "from": "g-rack-mgmt",
+      "to": "tor-mgmt-a",
+      "kind": "data",
       "label": ""
     },
     {
-      "id": "k-7",
-      "from": "orders-api",
-      "to": "k8s-prod",
+      "id": "k-04",
+      "from": "g-rack-mgmt",
+      "to": "tor-mgmt-b",
+      "kind": "data",
       "label": ""
     },
     {
-      "id": "k-8",
-      "from": "wiki",
-      "to": "ctr-wiki",
+      "id": "k-05",
+      "from": "g-rack-wld01",
+      "to": "tor-wld01-a",
+      "kind": "data",
       "label": ""
     },
     {
-      "id": "k-9",
-      "from": "k8s-prod",
-      "to": "db-orders",
-      "label": "SQL"
+      "id": "k-06",
+      "from": "g-rack-wld01",
+      "to": "tor-wld01-b",
+      "kind": "data",
+      "label": ""
+    },
+    {
+      "id": "k-07",
+      "from": "tor-mgmt-a",
+      "to": "spine-01",
+      "kind": "data",
+      "label": ""
+    },
+    {
+      "id": "k-08",
+      "from": "tor-mgmt-b",
+      "to": "spine-02",
+      "kind": "data",
+      "label": ""
+    },
+    {
+      "id": "k-09",
+      "from": "tor-wld01-a",
+      "to": "spine-01",
+      "kind": "data",
+      "label": ""
     },
     {
       "id": "k-10",
-      "from": "k8s-prod",
-      "to": "cache-01",
+      "from": "tor-wld01-b",
+      "to": "spine-02",
+      "kind": "data",
       "label": ""
     },
     {
       "id": "k-11",
-      "from": "k8s-prod",
-      "to": "mq-01",
-      "label": "events"
+      "from": "spine-01",
+      "to": "edge-router",
+      "kind": "data",
+      "label": ""
     },
     {
       "id": "k-12",
-      "from": "k8s-prod",
-      "to": "s3-01",
+      "from": "spine-02",
+      "to": "edge-router",
+      "kind": "data",
       "label": ""
     },
     {
       "id": "k-13",
-      "from": "lb-01",
-      "to": "k8s-prod",
-      "label": "ingress"
-    },
-    {
-      "id": "k-14",
-      "from": "vm-ci",
-      "to": "sw-core",
+      "from": "fw-perimeter",
+      "to": "edge-router",
+      "kind": "data",
       "label": ""
     },
     {
+      "id": "k-14",
+      "from": "users",
+      "to": "fw-perimeter",
+      "kind": "data",
+      "label": "HTTPS"
+    },
+    {
       "id": "k-15",
-      "from": "ctr-wiki",
-      "to": "fs-01",
+      "from": "g-mgmt-cluster",
+      "to": "g-rack-mgmt",
+      "kind": "runs-on",
       "label": ""
     },
     {
       "id": "k-16",
-      "from": "rtr-edge",
-      "to": "fw-01",
+      "from": "g-wld01-cluster",
+      "to": "g-rack-wld01",
+      "kind": "runs-on",
       "label": ""
     },
     {
       "id": "k-17",
-      "from": "fw-01",
-      "to": "lb-01",
-      "label": ""
+      "from": "g-edge-cluster",
+      "to": "g-wld01-cluster",
+      "kind": "runs-on",
+      "label": "Edge node VMs"
     },
     {
       "id": "k-18",
-      "from": "lb-01",
-      "to": "sw-core",
+      "from": "sddc-manager",
+      "to": "g-mgmt-cluster",
+      "kind": "runs-on",
       "label": ""
     },
     {
       "id": "k-19",
-      "from": "sw-core",
-      "to": "ap-office",
-      "label": "office link"
+      "from": "vc-mgmt",
+      "to": "g-mgmt-cluster",
+      "kind": "runs-on",
+      "label": ""
     },
     {
       "id": "k-20",
-      "from": "sw-core",
-      "to": "rack-a1",
-      "label": "10GbE"
+      "from": "vc-wld01",
+      "to": "g-mgmt-cluster",
+      "kind": "runs-on",
+      "label": ""
     },
     {
       "id": "k-21",
-      "from": "sw-core",
-      "to": "rack-a2",
-      "label": "10GbE"
+      "from": "nsxm-mgmt",
+      "to": "g-mgmt-cluster",
+      "kind": "runs-on",
+      "label": ""
     },
     {
       "id": "k-22",
-      "from": "sw-core",
-      "to": "rack-a3",
-      "label": "10GbE"
+      "from": "nsxm-wld01",
+      "to": "g-mgmt-cluster",
+      "kind": "runs-on",
+      "label": ""
     },
     {
       "id": "k-23",
-      "from": "sw-core",
-      "to": "san-01",
-      "label": "iSCSI"
+      "from": "sddc-manager",
+      "to": "vc-mgmt",
+      "kind": "manages",
+      "label": ""
     },
     {
       "id": "k-24",
-      "from": "sw-core",
-      "to": "fs-01",
+      "from": "sddc-manager",
+      "to": "vc-wld01",
+      "kind": "manages",
       "label": ""
     },
     {
       "id": "k-25",
-      "from": "ap-office",
-      "to": "ws-01",
+      "from": "sddc-manager",
+      "to": "nsxm-mgmt",
+      "kind": "manages",
       "label": ""
     },
     {
       "id": "k-26",
-      "from": "ap-office",
-      "to": "ws-02",
+      "from": "sddc-manager",
+      "to": "nsxm-wld01",
+      "kind": "manages",
       "label": ""
     },
     {
       "id": "k-27",
-      "from": "k8s-prod",
-      "to": "rack-a1",
+      "from": "sddc-manager",
+      "to": "g-edge-cluster",
+      "kind": "manages",
       "label": ""
     },
     {
       "id": "k-28",
-      "from": "k8s-prod",
-      "to": "rack-a2",
+      "from": "vc-mgmt",
+      "to": "g-mgmt-cluster",
+      "kind": "manages",
       "label": ""
     },
     {
       "id": "k-29",
-      "from": "db-orders",
-      "to": "rack-a3",
+      "from": "nsxm-mgmt",
+      "to": "g-mgmt-cluster",
+      "kind": "manages",
       "label": ""
     },
     {
       "id": "k-30",
-      "from": "vm-ci",
-      "to": "rack-a3",
+      "from": "vc-wld01",
+      "to": "g-wld01-cluster",
+      "kind": "manages",
       "label": ""
     },
     {
       "id": "k-31",
-      "from": "s3-01",
-      "to": "san-01",
+      "from": "vc-wld01",
+      "to": "g-edge-cluster",
+      "kind": "manages",
       "label": ""
     },
     {
       "id": "k-32",
-      "from": "ups-01",
-      "to": "rack-a1",
-      "label": "power"
+      "from": "nsxm-wld01",
+      "to": "g-wld01-cluster",
+      "kind": "manages",
+      "label": ""
+    },
+    {
+      "id": "k-33",
+      "from": "nsxm-wld01",
+      "to": "g-edge-cluster",
+      "kind": "manages",
+      "label": ""
+    },
+    {
+      "id": "k-34",
+      "from": "t0",
+      "to": "edge-router",
+      "kind": "data",
+      "label": "BGP"
+    },
+    {
+      "id": "k-35",
+      "from": "t0",
+      "to": "g-edge-cluster",
+      "kind": "runs-on",
+      "label": "service router"
+    },
+    {
+      "id": "k-36",
+      "from": "t1-sup",
+      "to": "g-edge-cluster",
+      "kind": "runs-on",
+      "label": ""
+    },
+    {
+      "id": "k-37",
+      "from": "t1-ns-a",
+      "to": "g-edge-cluster",
+      "kind": "runs-on",
+      "label": ""
+    },
+    {
+      "id": "k-38",
+      "from": "t1-ns-b",
+      "to": "g-edge-cluster",
+      "kind": "runs-on",
+      "label": ""
+    },
+    {
+      "id": "k-39",
+      "from": "t0",
+      "to": "t1-sup",
+      "kind": "overlay",
+      "label": ""
+    },
+    {
+      "id": "k-40",
+      "from": "t0",
+      "to": "t1-ns-a",
+      "kind": "overlay",
+      "label": ""
+    },
+    {
+      "id": "k-41",
+      "from": "t0",
+      "to": "t1-ns-b",
+      "kind": "overlay",
+      "label": ""
+    },
+    {
+      "id": "k-42",
+      "from": "t1-sup",
+      "to": "lb-sup",
+      "kind": "overlay",
+      "label": ""
+    },
+    {
+      "id": "k-43",
+      "from": "t1-sup",
+      "to": "seg-sup",
+      "kind": "overlay",
+      "label": ""
+    },
+    {
+      "id": "k-44",
+      "from": "t1-ns-a",
+      "to": "lb-ns-a",
+      "kind": "overlay",
+      "label": ""
+    },
+    {
+      "id": "k-45",
+      "from": "t1-ns-a",
+      "to": "seg-ns-a",
+      "kind": "overlay",
+      "label": ""
+    },
+    {
+      "id": "k-46",
+      "from": "t1-ns-b",
+      "to": "lb-ns-b",
+      "kind": "overlay",
+      "label": ""
+    },
+    {
+      "id": "k-47",
+      "from": "t1-ns-b",
+      "to": "seg-ns-b",
+      "kind": "overlay",
+      "label": ""
+    },
+    {
+      "id": "k-48",
+      "from": "g-ns-a-net",
+      "to": "g-wld01-cluster",
+      "kind": "runs-on",
+      "label": "segments on VDS"
+    },
+    {
+      "id": "k-49",
+      "from": "g-ns-b-net",
+      "to": "g-wld01-cluster",
+      "kind": "runs-on",
+      "label": "segments on VDS"
+    },
+    {
+      "id": "k-50",
+      "from": "dfw",
+      "to": "g-wld01-cluster",
+      "kind": "runs-on",
+      "label": "in each host kernel"
+    },
+    {
+      "id": "k-51",
+      "from": "g-supervisor",
+      "to": "g-wld01-cluster",
+      "kind": "runs-on",
+      "label": ""
+    },
+    {
+      "id": "k-52",
+      "from": "g-supervisor",
+      "to": "g-sup-net",
+      "kind": "overlay",
+      "label": ""
+    },
+    {
+      "id": "k-53",
+      "from": "g-ns-team-a",
+      "to": "g-ns-a-net",
+      "kind": "overlay",
+      "label": ""
+    },
+    {
+      "id": "k-54",
+      "from": "g-ns-team-b",
+      "to": "g-ns-b-net",
+      "kind": "overlay",
+      "label": ""
+    },
+    {
+      "id": "k-55",
+      "from": "vks-team-a-prod",
+      "to": "vks-a-cp",
+      "kind": "runs-on",
+      "label": ""
+    },
+    {
+      "id": "k-56",
+      "from": "vks-team-a-prod",
+      "to": "vks-a-workers",
+      "kind": "runs-on",
+      "label": ""
+    },
+    {
+      "id": "k-57",
+      "from": "vks-a-workers",
+      "to": "seg-ns-a",
+      "kind": "overlay",
+      "label": ""
+    },
+    {
+      "id": "k-58",
+      "from": "vsphere-pod-b",
+      "to": "seg-ns-b",
+      "kind": "overlay",
+      "label": ""
+    },
+    {
+      "id": "k-59",
+      "from": "vm-b-01",
+      "to": "seg-ns-b",
+      "kind": "overlay",
+      "label": ""
+    },
+    {
+      "id": "k-60",
+      "from": "vks-team-a-prod",
+      "to": "vsan-wld01",
+      "kind": "storage",
+      "label": "CNS volumes"
+    },
+    {
+      "id": "k-61",
+      "from": "vsphere-pod-b",
+      "to": "vsan-wld01",
+      "kind": "storage",
+      "label": "CNS volumes"
+    },
+    {
+      "id": "k-62",
+      "from": "harbor",
+      "to": "vks-team-a-prod",
+      "kind": "data",
+      "label": "images"
+    },
+    {
+      "id": "k-63",
+      "from": "web-app",
+      "to": "vks-team-a-prod",
+      "kind": "runs-on",
+      "label": ""
+    },
+    {
+      "id": "k-64",
+      "from": "api-service",
+      "to": "vks-team-a-prod",
+      "kind": "runs-on",
+      "label": ""
+    },
+    {
+      "id": "k-65",
+      "from": "users",
+      "to": "web-app",
+      "kind": "data",
+      "label": "HTTPS"
+    },
+    {
+      "id": "k-66",
+      "from": "web-app",
+      "to": "api-service",
+      "kind": "data",
+      "label": "HTTP"
     }
   ],
   "storylines": [
     {
-      "id": "s-order-journey",
-      "name": "How a customer order flows",
+      "id": "s-tour",
+      "name": "1. Tour of the layers",
       "steps": [
         {
-          "title": "Customers arrive",
-          "caption": "Customers reach us through the web portal or the mobile app. Both call the same Orders API.",
+          "title": "Physical",
+          "caption": "The bottom layer is the hardware: two racks of ESXi hosts and their power. ESXi is the virtualization platform that every VM in this map runs on.",
+          "view": "3d",
+          "highlight": [
+            "g-rack-mgmt",
+            "g-rack-wld01",
+            "ups-01"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "Physical network",
+          "caption": "Leaf and spine switches, the edge router and the perimeter firewall. The NSX Tier-0 connects to the physical routers for north-south traffic; overlay traffic is Geneve-encapsulated, so VM networks are separate from this physical topology.",
+          "view": "3d",
+          "highlight": [
+            "tor-mgmt-a",
+            "tor-mgmt-b",
+            "tor-wld01-a",
+            "tor-wld01-b",
+            "spine-01",
+            "spine-02",
+            "edge-router",
+            "fw-perimeter"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "Virtual infrastructure",
+          "caption": "VCF groups ESXi hosts managed by a vCenter Server into workload domains. The management domain holds the management appliances (SDDC Manager, vCenters, NSX Managers) for all domains; WLD-01 runs the workloads and its NSX Edge cluster.",
+          "view": "3d",
+          "highlight": [
+            "g-mgmt-domain",
+            "g-wld01-domain"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "NSX overlay",
+          "caption": "Tier-0 and Tier-1 gateways, segments, load balancers and the Distributed Firewall give virtual networking and security.",
+          "view": "3d",
+          "highlight": [
+            "t0",
+            "dfw",
+            "g-sup-net",
+            "g-ns-a-net",
+            "g-ns-b-net"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "Workload platform",
+          "caption": "vSphere Supervisor turns the WLD-01 cluster into a platform for running Kubernetes workloads natively on the hypervisor layer, divided into vSphere Namespaces.",
+          "view": "3d",
+          "highlight": [
+            "g-supervisor"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "Application",
+          "caption": "The apps run as Kubernetes workloads in VKS clusters, as vSphere Pods or as VMs. Here the web app and the API run in the VKS cluster team-a-prod.",
           "view": "3d",
           "highlight": [
             "users",
-            "portal",
-            "mobile",
-            "orders-api"
+            "web-app",
+            "api-service"
           ],
-          "camera": null
-        },
+          "camera": null,
+          "kinds": null
+        }
+      ]
+    },
+    {
+      "id": "s-who-manages",
+      "name": "2. Who manages what",
+      "steps": [
         {
-          "title": "Through the perimeter",
-          "caption": "Traffic comes in over two internet links, passes the firewall, and the load balancer terminates TLS.",
-          "view": "iso",
-          "highlight": [
-            "rtr-edge",
-            "fw-01",
-            "lb-01"
-          ],
-          "camera": null
-        },
-        {
-          "title": "Into the production cluster",
-          "caption": "The load balancer forwards requests to the Kubernetes ingress, where the portal and the Orders API run.",
-          "view": "iso",
-          "highlight": [
-            "lb-01",
-            "k8s-prod",
-            "portal",
-            "orders-api"
-          ],
-          "camera": null
-        },
-        {
-          "title": "Data and events",
-          "caption": "Orders are written to PostgreSQL, sessions live in the cache, and order events go onto the queue for fulfilment.",
-          "view": "iso",
-          "highlight": [
-            "k8s-prod",
-            "db-orders",
-            "cache-01",
-            "mq-01",
-            "s3-01"
-          ],
-          "camera": null
-        },
-        {
-          "title": "Down to the hardware",
-          "caption": "All of this runs on rack row A in Data centre 1, with storage on SAN-01 and power backed by UPS-01.",
+          "title": "SDDC Manager",
+          "caption": "SDDC Manager does full lifecycle management: deployment, configuration, patching and upgrades. For a new VI workload domain such as WLD-01, VCF deploys its vCenter (and, for the first one, a three-node NSX Manager cluster) in the management domain; SDDC Manager also deploys NSX Edge clusters. It does not install ESXi: hosts get ESXi first and are then commissioned into SDDC Manager.",
           "view": "3d",
           "highlight": [
-            "rack-a1",
-            "rack-a2",
-            "rack-a3",
-            "san-01",
-            "ups-01",
-            "sw-core"
+            "sddc-manager",
+            "vc-mgmt",
+            "vc-wld01",
+            "nsxm-mgmt",
+            "nsxm-wld01",
+            "g-edge-cluster"
           ],
-          "camera": null
+          "camera": null,
+          "kinds": [
+            "manages"
+          ]
+        },
+        {
+          "title": "One vCenter and NSX Manager per domain",
+          "caption": "Each workload domain has its own vCenter Server, and all vCenter instances run in the management domain, so WLD-01's vCenter sits in the management cluster. WLD-01's NSX Manager cluster runs there too: workload domains cannot use the management domain's NSX Manager, and later workload domains could share WLD-01's or get a new one.",
+          "view": "3d",
+          "highlight": [
+            "vc-mgmt",
+            "vc-wld01",
+            "nsxm-mgmt",
+            "nsxm-wld01",
+            "g-mgmt-cluster"
+          ],
+          "camera": null,
+          "kinds": [
+            "manages"
+          ]
+        },
+        {
+          "title": "vCenter and NSX Manager run the cluster",
+          "caption": "vCenter Server is the central administrator for the ESXi hosts of its domain. NSX Manager holds the management and central control plane; the local control plane on every host and Edge receives the routing, segment and firewall configuration.",
+          "view": "3d",
+          "highlight": [
+            "vc-wld01",
+            "nsxm-wld01",
+            "g-wld01-cluster",
+            "g-edge-cluster"
+          ],
+          "camera": null,
+          "kinds": [
+            "manages"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s-supervisor",
+      "name": "3. What the Supervisor is",
+      "steps": [
+        {
+          "title": "A Kubernetes control plane in the hypervisor",
+          "caption": "Activating Supervisor on the WLD-01 cluster creates a Kubernetes control plane inside the hypervisor layer: three control plane VMs, plus Spherelet, a kubelet ported to ESXi, on each host so the host becomes part of the Kubernetes cluster.",
+          "view": "3d",
+          "highlight": [
+            "g-supervisor",
+            "sup-cp-1",
+            "sup-cp-2",
+            "sup-cp-3",
+            "g-rack-wld01"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "vSphere Namespaces",
+          "caption": "vSphere Namespaces divide the Supervisor into tenancies. Each provides networking, role permissions, persistent storage, a resource quota, and content library and VM class integration; users can only use the VM classes associated with their namespace. Assigning a storage policy creates matching Kubernetes storage classes.",
+          "view": "3d",
+          "highlight": [
+            "g-ns-team-a",
+            "g-ns-team-b"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "Not a separate cluster on top",
+          "caption": "The Supervisor is the WLD-01 cluster itself with Supervisor enabled, not a separate cluster on top of it: its control plane lives inside the hypervisor layer. Team workloads run in its namespaces as VKS clusters, vSphere Pods and VMs.",
+          "view": "3d",
+          "highlight": [
+            "g-supervisor",
+            "g-wld01-cluster"
+          ],
+          "camera": null,
+          "kinds": null
+        }
+      ]
+    },
+    {
+      "id": "s-vks-provisioning",
+      "name": "4. Provisioning a VKS cluster",
+      "steps": [
+        {
+          "title": "Apply a Cluster",
+          "caption": "A user applies a Cluster API Cluster (cluster.x-k8s.io/v1beta1) to namespace team-a through the Supervisor. It references a versioned ClusterClass such as builtin-generic-v3.3.0; Cluster API gives declarative, Kubernetes-style cluster management.",
+          "view": "3d",
+          "highlight": [
+            "vks-team-a-prod",
+            "g-ns-team-a"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "Node VMs",
+          "caption": "The VM Service creates and manages the cluster's control plane and worker node VMs on the WLD-01 cluster.",
+          "view": "3d",
+          "highlight": [
+            "vks-a-cp",
+            "vks-a-workers",
+            "g-wld01-cluster"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "Networking from NSX",
+          "caption": "NCP creates a Tier-1 gateway and load balancer for each namespace by default, and the cluster's segments are defined within team-a's Tier-1.",
+          "view": "3d",
+          "highlight": [
+            "t1-ns-a",
+            "lb-ns-a",
+            "seg-ns-a",
+            "g-ns-a-net"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "Persistent storage",
+          "caption": "Storage policies assigned to the namespace become Kubernetes storage classes. The cluster's pvCSI plug-in passes volume requests through the Supervisor to Cloud Native Storage (CNS) in vCenter.",
+          "view": "3d",
+          "highlight": [
+            "vks-team-a-prod",
+            "vc-wld01",
+            "vsan-wld01"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "The old API",
+          "caption": "Older guides create clusters with the TanzuKubernetesCluster (TKC) API. It was deprecated in October 2024, and Broadcom recommends moving to Cluster API.",
+          "view": "3d",
+          "highlight": [
+            "vks-team-a-prod"
+          ],
+          "camera": null,
+          "kinds": null
+        }
+      ]
+    },
+    {
+      "id": "s-north-south",
+      "name": "5. North-south: customer to pod",
+      "steps": [
+        {
+          "title": "Into the data centre",
+          "caption": "Customer traffic comes in through the perimeter firewall to the edge router.",
+          "view": "3d",
+          "highlight": [
+            "users",
+            "fw-perimeter",
+            "edge-router"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "BGP to the Tier-0 on the Edges",
+          "caption": "The edge router peers with the Tier-0 gateway over BGP. The Tier-0 gives north-south connectivity, and its service router runs on the NSX Edge nodes. It is Active-Active, which Workload Management requires when SDDC Manager deploys the Edge cluster.",
+          "view": "3d",
+          "highlight": [
+            "edge-router",
+            "t0",
+            "edge-01",
+            "edge-02"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "Namespace Tier-1 and load balancer",
+          "caption": "The Tier-0 connects to team-a's Tier-1, which also connects to the namespace segment. With the NSX load balancer, the web app's LoadBalancer Service maps to an NSX virtual server; VMware Avi Load Balancer is an alternative provider.",
+          "view": "3d",
+          "highlight": [
+            "t0",
+            "t1-ns-a",
+            "lb-ns-a"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "Segment, node VM, pod",
+          "caption": "From the load balancer, traffic crosses the namespace segment to the VKS node VMs. Inside the cluster, the CNI (Antrea by default) provides pod connectivity, so traffic reaches the web app's pods via the node VMs.",
+          "view": "3d",
+          "highlight": [
+            "seg-ns-a",
+            "vks-a-workers",
+            "vks-team-a-prod",
+            "web-app"
+          ],
+          "camera": null,
+          "kinds": null
+        }
+      ]
+    },
+    {
+      "id": "s-east-west",
+      "name": "6. East-west and the Distributed Firewall",
+      "steps": [
+        {
+          "title": "Geneve overlay and the DFW",
+          "caption": "Overlay traffic between hosts is carried with Geneve encapsulation. The Distributed Firewall is deployed on each ESXi host, in the NSX kernel modules, with a firewall on each virtual NIC; it is not a central box.",
+          "view": "3d",
+          "highlight": [
+            "dfw",
+            "g-wld01-cluster",
+            "seg-ns-a",
+            "seg-ns-b"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "Namespace security policies",
+          "caption": "On an NSX-based Supervisor, namespace security policies protect traffic for vSphere Pods and VMs, including VKS node VMs. NCP realises Supervisor network and security policies as rules on NSX Manager. Without the NSX DFW license add-on, NCP can't add these rules.",
+          "view": "3d",
+          "highlight": [
+            "g-ns-team-b",
+            "vsphere-pod-b",
+            "vm-b-01",
+            "dfw",
+            "nsxm-wld01"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "Inside a VKS cluster: Antrea",
+          "caption": "VKS clusters use Antrea as the default CNI. Inside team-a-prod, pod-to-pod traffic and Kubernetes NetworkPolicy are handled by Antrea; namespace security policies apply to the node VMs.",
+          "view": "3d",
+          "highlight": [
+            "vks-team-a-prod",
+            "vks-a-cp",
+            "vks-a-workers"
+          ],
+          "camera": null,
+          "kinds": null
+        }
+      ]
+    },
+    {
+      "id": "s-storage",
+      "name": "7. Storage path",
+      "steps": [
+        {
+          "title": "PVC in the VKS cluster",
+          "caption": "An app in team-a-prod creates a PersistentVolumeClaim. The paravirtual CSI (pvCSI) plug-in in the VKS cluster handles it.",
+          "view": "3d",
+          "highlight": [
+            "vks-team-a-prod",
+            "api-service"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "Matching PVC on the Supervisor",
+          "caption": "pvCSI creates a matching PVC on the Supervisor, which triggers CNS-CSI to pass the request to Cloud Native Storage (CNS) in vCenter Server.",
+          "view": "3d",
+          "highlight": [
+            "g-supervisor",
+            "vc-wld01"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "First Class Disk on vSAN",
+          "caption": "Storage Policy Based Management provisions a volume that meets the storage policy behind the storage class. A ReadWriteOnce volume is backed by a First Class Disk, here on the WLD-01 vSAN datastore.",
+          "view": "3d",
+          "highlight": [
+            "vsan-wld01",
+            "vks-team-a-prod"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "vSphere Pod volumes",
+          "caption": "For the vSphere Pod in team-b, the PVC is in the Supervisor namespace directly. The Supervisor creates the volume and its virtual disk on a datastore that meets the storage policy behind the PVC's storage class.",
+          "view": "3d",
+          "highlight": [
+            "vsphere-pod-b",
+            "g-ns-team-b",
+            "vsan-wld01"
+          ],
+          "camera": null,
+          "kinds": null
+        }
+      ]
+    },
+    {
+      "id": "s-host-failure",
+      "name": "8. A host fails",
+      "steps": [
+        {
+          "title": "HA restarts the VMs",
+          "caption": "If a WLD-01 host fails, vSphere HA restarts its virtual machines on the other hosts in the cluster. The Supervisor cluster must have vSphere HA and DRS enabled.",
+          "view": "3d",
+          "highlight": [
+            "esxi-wld01-04",
+            "g-wld01-cluster"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "DRS rebalances",
+          "caption": "After HA restarts VMs, some hosts may be heavily loaded; vSphere HA can use DRS to rebalance the cluster.",
+          "view": "3d",
+          "highlight": [
+            "g-wld01-cluster"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "Supervisor control plane",
+          "caption": "vSphere DRS decides which hosts the three Supervisor control plane VMs run on and migrates them when needed.",
+          "view": "3d",
+          "highlight": [
+            "sup-cp-1",
+            "sup-cp-2",
+            "sup-cp-3"
+          ],
+          "camera": null,
+          "kinds": null
+        },
+        {
+          "title": "Inside the VKS cluster",
+          "caption": "VKS clusters get default MachineHealthCheck objects that define when unhealthy node VMs are remediated. Kubernetes evicts pods from an unreachable node after 5 minutes by default, and ReplicaSets (usually managed by Deployments) create new pods to keep the desired number running.",
+          "view": "3d",
+          "highlight": [
+            "vks-team-a-prod",
+            "vks-a-workers",
+            "web-app"
+          ],
+          "camera": null,
+          "kinds": null
         }
       ]
     }
