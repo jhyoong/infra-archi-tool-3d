@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from '../lib/OrbitControls.js';
 import { CSS2DRenderer, CSS2DObject } from '../lib/CSS2DRenderer.js';
 import { getModelGeometry } from './models.js';
+import { CONN_KINDS, groupDepth, groupParent, descendantGroups, groupMembers } from './data.js';
 
 export const VIEW_FOV = { '3d': 42, iso: 12 };
 const HOME_DIR = new THREE.Vector3(0.85, 0.72, 1.3).normalize();
@@ -9,8 +10,24 @@ const ISO_DIR = new THREE.Vector3(1, 0.92, 1).normalize();
 const LAYER_DIR = new THREE.Vector3(0.55, 1.35, 0.95).normalize();
 const BG = new THREE.Color('#0E1724');
 const AMBER = new THREE.Color('#F5B83D');
-const LINE = new THREE.Color('#7F92AB');
-const LINE_DIM = new THREE.Color('#223047');
+
+// Line look per connection kind. `dash` is [dashSize, gapSize] in world units; null draws a solid line.
+// Kinds differ by pattern as well as colour. Task 5's legend reads this to draw matching swatches.
+export const KIND_STYLES = {
+  data: { color: '#93A4BA', dash: null },
+  'runs-on': { color: '#6CB6FF', dash: [1.2, 0.4] },
+  manages: { color: '#B992FF', dash: [0.5, 0.35] },
+  overlay: { color: '#FF7EB6', dash: [0.18, 0.18] },
+  storage: { color: '#4FD1A5', dash: [0.9, 0.9] },
+  power: { color: '#F07167', dash: [0.1, 0.5] },
+};
+const KIND_COLOR = {}, KIND_DIM = {};
+for (const [k, st] of Object.entries(KIND_STYLES)) {
+  KIND_COLOR[k] = new THREE.Color(st.color);
+  KIND_DIM[k] = KIND_COLOR[k].clone().lerp(BG, 0.75);
+}
+const DIRECTED = new Set(CONN_KINDS.filter((k) => k.directed).map((k) => k.id));
+const ARROW_LEN = 0.75;
 const LABEL_RANGE = 30; // labels show when the view is closer than this
 const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -47,6 +64,7 @@ export class MapScene {
     this.labelsOn = true;
     this.gap = 10;
     this.hiddenLayers = new Set();
+    this.visibleKinds = new Set(CONN_KINDS.map((k) => k.id));
     this.selection = [];
     this.selKind = null;
     this.highlight = null;
@@ -86,12 +104,23 @@ export class MapScene {
     this.root = new THREE.Group();
     this.scene.add(this.root);
 
-    this.connGeo = new THREE.BufferGeometry();
-    this.connLines = new THREE.LineSegments(
-      this.connGeo,
-      new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.9 })
-    );
-    this.scene.add(this.connLines);
+    // One LineSegments per connection kind; geometries are replaced on every rebuild, materials persist.
+    this.connLines = new Map();
+    for (const { id } of CONN_KINDS) {
+      const st = KIND_STYLES[id];
+      const opts = { vertexColors: true, transparent: true, opacity: 0.9 };
+      const mat = st.dash
+        ? new THREE.LineDashedMaterial({ ...opts, dashSize: st.dash[0], gapSize: st.dash[1] })
+        : new THREE.LineBasicMaterial(opts);
+      const line = new THREE.LineSegments(new THREE.BufferGeometry(), mat);
+      this.connLines.set(id, line);
+      this.scene.add(line);
+    }
+    // Arrowheads for directed kinds: shared cone geometry with its tip at the origin, pointing +Y.
+    this.arrowGeo = new THREE.ConeGeometry(0.28, ARROW_LEN, 14);
+    this.arrowGeo.translate(0, -ARROW_LEN / 2, 0);
+    this.connArrows = new THREE.Group();
+    this.scene.add(this.connArrows);
     this.connLabels = new THREE.Group();
     this.scene.add(this.connLabels);
 
@@ -193,7 +222,9 @@ export class MapScene {
     if (!lo) return;
     const col = new THREE.Color(G.color || lo.color);
     const holder = new THREE.Group();
-    holder.position.set(G.x, 0.01, G.z);
+    const groups = this.data.groups;
+    const depth = groupDepth(groups, G);
+    holder.position.set(G.x, 0.01 + depth * 0.04, G.z);
 
     const fill = new THREE.Mesh(
       new THREE.PlaneGeometry(G.w, G.d),
@@ -205,10 +236,11 @@ export class MapScene {
 
     const hw = G.w / 2, hd = G.d / 2;
     const pts = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd], [-hw, -hd]].map(([x, z]) => new THREE.Vector3(x, 0.02, z));
-    const baseColor = col.clone().lerp(new THREE.Color('#ffffff'), 0.3);
+    // Deeper groups get a brighter, more opaque outline so nested rectangles stay distinguishable.
+    const baseColor = col.clone().lerp(new THREE.Color('#ffffff'), Math.min(0.3 + depth * 0.2, 0.85));
     const outline = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints(pts),
-      new THREE.LineDashedMaterial({ color: baseColor, dashSize: 0.6, gapSize: 0.35 })
+      new THREE.LineDashedMaterial({ color: baseColor, dashSize: 0.6, gapSize: 0.35, transparent: true, opacity: Math.min(0.6 + depth * 0.2, 1) })
     );
     outline.computeLineDistances();
     holder.add(outline);
@@ -219,7 +251,13 @@ export class MapScene {
     el.textContent = G.name || 'Untitled group';
     el.addEventListener('click', (e) => this.h.onPick?.({ kind: 'group', id: G.id }, e));
     const label = new CSS2DObject(el);
-    label.position.set(-hw, 0.05, -hd);
+    // Nudge the label in z for each ancestor whose top-left corner coincides with ours.
+    let nudge = 0;
+    for (let c = G, p = groupParent(groups, c); p; c = p, p = groupParent(groups, c)) {
+      if (p.x - p.w / 2 !== c.x - c.w / 2 || p.z - p.d / 2 !== c.z - c.d / 2) break;
+      nudge += 0.4;
+    }
+    label.position.set(-hw, 0.05, -hd + nudge);
     label.center.set(0, 1);
     holder.add(label);
 
@@ -320,36 +358,64 @@ export class MapScene {
     return this.badgeCache.get(path);
   }
 
+  // A connection endpoint: a component, or a group anchored at its centre just above its layer (height 0).
+  _endpoint(id) {
+    const c = this.compObjs.get(id);
+    if (c) return { pos: c.holder.getWorldPosition(new THREE.Vector3()), height: c.height, lift: 0.02, layerId: c.layerId };
+    const g = this.groupObjs.get(id);
+    const lo = g && this.layerObjs.get(g.layerId);
+    if (!lo) return null;
+    const pos = g.holder.getWorldPosition(new THREE.Vector3());
+    pos.y = lo.group.getWorldPosition(this._wp).y + 0.05;
+    return { pos, height: 0, lift: 0, layerId: g.layerId };
+  }
+
+  // Points run from A to B, so the last segment points at B.
   _connPoints(A, B) {
-    const pa = A.holder.getWorldPosition(new THREE.Vector3());
-    const pb = B.holder.getWorldPosition(new THREE.Vector3());
     if (A.layerId === B.layerId) {
-      const s = pa.clone(); s.y += A.height * 0.55;
-      const e = pb.clone(); e.y += B.height * 0.55;
+      const s = A.pos.clone(); s.y += A.height * 0.55;
+      const e = B.pos.clone(); e.y += B.height * 0.55;
       const c = s.clone().add(e).multiplyScalar(0.5);
       c.y += 1.2 + s.distanceTo(e) * 0.18;
       const curve = new THREE.QuadraticBezierCurve3(s, c, e);
       return { pts: curve.getPoints(16), mid: curve.getPoint(0.5) };
     }
-    const [lo, hi] = pa.y < pb.y ? [[pa, A], [pb, B]] : [[pb, B], [pa, A]];
-    const s = lo[0].clone(); s.y += lo[1].height;
-    const e = hi[0].clone(); e.y += 0.02;
-    return { pts: [s, e], mid: s.clone().lerp(e, 0.5) };
+    const aLow = A.pos.y < B.pos.y;
+    const [lo, hi] = aLow ? [A, B] : [B, A];
+    const s = lo.pos.clone(); s.y += lo.height;
+    const e = hi.pos.clone(); e.y += hi.lift;
+    return { pts: aLow ? [s, e] : [e, s], mid: s.clone().lerp(e, 0.5) };
   }
 
   _buildConnections() {
+    if (!this.data) return;
     for (const l of [...this.connLabels.children]) {
       this.connLabels.remove(l);
       l.element.remove();
     }
-    const pos = [];
+    for (const a of [...this.connArrows.children]) {
+      this.connArrows.remove(a);
+      a.material.dispose();
+    }
+    const posByKind = new Map([...this.connLines.keys()].map((kind) => [kind, []]));
     this.connRanges = [];
     for (const k of this.data.connections) {
-      const A = this.compObjs.get(k.from), B = this.compObjs.get(k.to);
+      const pos = posByKind.get(k.kind);
+      if (!pos || !this.visibleKinds.has(k.kind)) continue;
+      const A = this._endpoint(k.from), B = this._endpoint(k.to);
       if (!A || !B || this.hiddenLayers.has(A.layerId) || this.hiddenLayers.has(B.layerId)) continue;
       const { pts, mid } = this._connPoints(A, B);
       const start = pos.length / 3;
       for (let i = 0; i < pts.length - 1; i++) pos.push(...pts[i].toArray(), ...pts[i + 1].toArray());
+      let arrow = null;
+      if (DIRECTED.has(k.kind)) {
+        const tip = pts[pts.length - 1];
+        const dir = tip.clone().sub(pts[pts.length - 2]).normalize();
+        arrow = new THREE.Mesh(this.arrowGeo, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.9 }));
+        arrow.position.copy(tip);
+        arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+        this.connArrows.add(arrow);
+      }
       let label = null;
       if (k.label) {
         const el = document.createElement('div');
@@ -360,35 +426,61 @@ export class MapScene {
         label.visible = false;
         this.connLabels.add(label);
       }
-      this.connRanges.push({ conn: k, start, count: pos.length / 3 - start, label });
+      this.connRanges.push({ conn: k, start, count: pos.length / 3 - start, label, arrow });
     }
-    this.connGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    this.connGeo.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(pos.length), 3));
-    this.connGeo.computeBoundingSphere();
+    for (const [kind, line] of this.connLines) {
+      const pos = posByKind.get(kind);
+      line.geometry.dispose();
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(pos.length), 3));
+      geo.computeBoundingSphere();
+      line.geometry = geo;
+      if (line.material.isLineDashedMaterial) line.computeLineDistances();
+    }
     this._colorConnections();
+  }
+
+  setVisibleKinds(kinds) {
+    this.visibleKinds = new Set(kinds);
+    this._buildConnections();
+    this._applyEmphasis();
   }
 
   // ---------- Emphasis (selection, storyline highlights) ----------
   _emphasis() {
     if (this.highlight) {
-      const ids = new Set(this.highlight);
-      return { mode: 'story', ids, core: ids };
+      // A highlighted group brings its nested groups and member components with it,
+      // so the step doesn't dim the very things it is pointing at.
+      const core = new Set(this.highlight);
+      const ids = new Set(core);
+      for (const g of this.data?.groups ?? []) {
+        if (!core.has(g.id)) continue;
+        for (const sub of [g, ...descendantGroups(this.data.groups, g)]) {
+          ids.add(sub.id);
+          for (const c of groupMembers(this.data.components, sub)) ids.add(c.id);
+        }
+      }
+      return { mode: 'story', ids, core };
     }
-    if (this.selKind === 'component' && this.selection.length && !this.editMode) {
+    const selectable = this.selKind === 'component' || this.selKind === 'group';
+    if (selectable && this.selection.length && !this.editMode) {
       const core = new Set(this.selection);
       const ids = new Set(core);
+      let linked = false;
       for (const k of this.data.connections) {
-        if (core.has(k.from)) ids.add(k.to);
-        if (core.has(k.to)) ids.add(k.from);
+        if (!this.visibleKinds.has(k.kind)) continue;
+        if (core.has(k.from)) { ids.add(k.to); linked = true; }
+        if (core.has(k.to)) { ids.add(k.from); linked = true; }
       }
-      return { mode: 'select', ids, core };
+      // A selected group only takes over emphasis when it has connections of its own.
+      if (this.selKind === 'component' || linked) return { mode: 'select', ids, core };
     }
     return null;
   }
 
   _colorConnections() {
-    const attr = this.connGeo.getAttribute('color');
-    if (!attr) return;
+    if (!this.data) return;
     const emph = this._emphasis();
     for (const r of this.connRanges) {
       let hot = false, dim = false;
@@ -398,11 +490,13 @@ export class MapScene {
           : emph.core.has(r.conn.from) || emph.core.has(r.conn.to);
         dim = !hot;
       }
-      const c = hot ? AMBER : dim ? LINE_DIM : LINE;
+      const c = hot ? AMBER : dim ? KIND_DIM[r.conn.kind] : KIND_COLOR[r.conn.kind];
+      const attr = this.connLines.get(r.conn.kind).geometry.getAttribute('color');
       for (let i = 0; i < r.count; i++) attr.setXYZ(r.start + i, c.r, c.g, c.b);
+      if (r.arrow) r.arrow.material.color.copy(c);
       if (r.label) r.label.visible = hot;
     }
-    attr.needsUpdate = true;
+    for (const line of this.connLines.values()) line.geometry.getAttribute('color').needsUpdate = true;
   }
 
   _applyEmphasis() {
@@ -420,9 +514,10 @@ export class MapScene {
     }
     for (const [id, g] of this.groupObjs) {
       const sel = this.selKind === 'group' && this.selection.includes(id);
-      g.outline.material.color.copy(sel ? AMBER : g.baseColor);
+      const lit = sel || (emph?.mode === 'story' && emph.core.has(id));
+      g.outline.material.color.copy(lit ? AMBER : g.baseColor);
       g.label.element.classList.toggle('sel', sel);
-      g.label.element.classList.toggle('dim', !!emph && !sel);
+      g.label.element.classList.toggle('dim', !!emph && !sel && !emph.ids.has(id));
     }
     this._colorConnections();
   }
@@ -555,14 +650,15 @@ export class MapScene {
   }
 
   frameIds(ids, view = this.view) {
-    const objs = (ids || []).map((id) => this.compObjs.get(id)).filter(Boolean);
+    // Components frame by their mesh, groups by their footprint.
+    const objs = (ids || []).map((id) => this.compObjs.get(id)?.mesh || this.groupObjs.get(id)?.fill).filter(Boolean);
     if (!objs.length) {
       this._setViewMode(view);
       this.home();
       return;
     }
     const box = new THREE.Box3();
-    for (const o of objs) box.expandByObject(o.mesh);
+    for (const o of objs) box.expandByObject(o);
     const s = box.getBoundingSphere(new THREE.Sphere());
     this._frameSphere(s.center, Math.max(5, s.radius * 1.2), view, view === 'iso' ? ISO_DIR : undefined);
   }
@@ -664,9 +760,17 @@ export class MapScene {
     const members = [];
     if (hit.kind === 'group') {
       const G = obj.data;
-      for (const [id, o] of this.compObjs) {
-        if (o.layerId === G.layer && Math.abs(o.holder.position.x - G.x) <= G.w / 2 && Math.abs(o.holder.position.z - G.z) <= G.d / 2) {
-          members.push({ id, o, x0: o.holder.position.x, z0: o.holder.position.z });
+      const add = (kind, id, o) => members.push({ kind, id, o, x0: o.holder.position.x, z0: o.holder.position.z });
+      const nested = descendantGroups(this.data.groups, G);
+      for (const g of nested) {
+        const o = this.groupObjs.get(g.id);
+        if (o) add('group', g.id, o);
+      }
+      const seen = new Set();
+      for (const g of [G, ...nested]) {
+        for (const c of groupMembers(this.data.components, g)) {
+          const o = this.compObjs.get(c.id);
+          if (o && !seen.has(c.id)) { seen.add(c.id); add('component', c.id, o); }
         }
       }
     }
@@ -702,7 +806,7 @@ export class MapScene {
       this.h.onDragEnd?.({
         kind: d.kind, id: d.id,
         x: d.obj.holder.position.x, z: d.obj.holder.position.z,
-        members: d.members.map((m) => ({ id: m.id, x: m.o.holder.position.x, z: m.o.holder.position.z })),
+        members: d.members.map((m) => ({ kind: m.kind, id: m.id, x: m.o.holder.position.x, z: m.o.holder.position.z })),
       });
     }
   }
