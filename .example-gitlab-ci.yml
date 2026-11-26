@@ -1,0 +1,16 @@
+# Publishes the public/ folder to GitLab Pages. The site has no build step.
+#
+# Airgapped runners: set `image` to any small image from your internal
+# registry that has a shell (for example a mirrored alpine or busybox).
+pages:
+  stage: deploy
+  image: alpine:3.20
+  script:
+    - test -f public/index.html
+    - test -f public/data/infrastructure.json
+    - echo "Publishing public/ to GitLab Pages"
+  artifacts:
+    paths:
+      - public
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

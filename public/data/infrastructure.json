@@ -1,0 +1,770 @@
+{
+  "version": 1,
+  "meta": {
+    "title": "Example Corp infrastructure",
+    "layerGap": 10,
+    "updated": "2026-11-26T00:00:00.000Z"
+  },
+  "layers": [
+    {
+      "id": "hardware",
+      "name": "Hardware",
+      "color": "#A0A8B5"
+    },
+    {
+      "id": "network",
+      "name": "Network",
+      "color": "#2FBF9F"
+    },
+    {
+      "id": "platform",
+      "name": "Platform",
+      "color": "#9B87F5"
+    },
+    {
+      "id": "application",
+      "name": "Application",
+      "color": "#5AA7F0"
+    }
+  ],
+  "typeIcons": {},
+  "groups": [
+    {
+      "id": "g-dc1",
+      "name": "Data centre 1",
+      "layer": "hardware",
+      "x": -11.5,
+      "z": -0.5,
+      "w": 13,
+      "d": 12,
+      "description": "Primary data centre, rack row A.",
+      "color": null
+    },
+    {
+      "id": "g-office",
+      "name": "Head office",
+      "layer": "hardware",
+      "x": 10,
+      "z": 0.5,
+      "w": 9,
+      "d": 10,
+      "description": "Head office comms room and desks.",
+      "color": null
+    },
+    {
+      "id": "g-perimeter",
+      "name": "Perimeter",
+      "layer": "network",
+      "x": -10,
+      "z": 6,
+      "w": 17,
+      "d": 5,
+      "description": "Internet-facing network devices.",
+      "color": null
+    },
+    {
+      "id": "g-prod",
+      "name": "Production",
+      "layer": "platform",
+      "x": -7,
+      "z": 0.5,
+      "w": 20,
+      "d": 12,
+      "description": "Customer-facing platform services.",
+      "color": null
+    },
+    {
+      "id": "g-tools",
+      "name": "Internal tooling",
+      "layer": "platform",
+      "x": 9.5,
+      "z": 0,
+      "w": 7,
+      "d": 10,
+      "description": "Platform for internal tools.",
+      "color": null
+    }
+  ],
+  "components": [
+    {
+      "id": "rack-a1",
+      "name": "Rack A1",
+      "type": "server-rack",
+      "layer": "hardware",
+      "x": -15,
+      "z": -4,
+      "description": "Compute nodes for the production Kubernetes cluster.",
+      "links": [
+        {
+          "label": "Asset record",
+          "url": "https://gitlab.example.internal/assets/rack-a1"
+        }
+      ],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "rack-a2",
+      "name": "Rack A2",
+      "type": "server-rack",
+      "layer": "hardware",
+      "x": -11,
+      "z": -4,
+      "description": "Compute nodes for the production Kubernetes cluster.",
+      "links": [
+        {
+          "label": "Asset record",
+          "url": "https://gitlab.example.internal/assets/rack-a2"
+        }
+      ],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "rack-a3",
+      "name": "Rack A3",
+      "type": "server-rack",
+      "layer": "hardware",
+      "x": -7,
+      "z": -4,
+      "description": "Database hosts and virtualisation hosts.",
+      "links": [
+        {
+          "label": "Asset record",
+          "url": "https://gitlab.example.internal/assets/rack-a3"
+        }
+      ],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "san-01",
+      "name": "SAN-01",
+      "type": "storage-array",
+      "layer": "hardware",
+      "x": -11,
+      "z": 3,
+      "description": "Primary block and object storage. Replicated nightly to the DR site.",
+      "links": [
+        {
+          "label": "Runbook",
+          "url": "https://gitlab.example.internal/runbooks/san"
+        }
+      ],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "ups-01",
+      "name": "UPS-01",
+      "type": "ups",
+      "layer": "hardware",
+      "x": -16,
+      "z": 3,
+      "description": "Covers all of rack row A. About 25 minutes runtime at full load.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "ws-01",
+      "name": "Ops workstation",
+      "type": "workstation",
+      "layer": "hardware",
+      "x": 8,
+      "z": -2,
+      "description": "Shared operations desk.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "ws-02",
+      "name": "Dev workstation",
+      "type": "workstation",
+      "layer": "hardware",
+      "x": 12,
+      "z": -2,
+      "description": "Developer desk.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "fs-01",
+      "name": "Office server",
+      "type": "server",
+      "layer": "hardware",
+      "x": 10,
+      "z": 3,
+      "description": "Hosts internal tooling VMs at head office.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "rtr-edge",
+      "name": "Edge router",
+      "type": "router",
+      "layer": "network",
+      "x": -16,
+      "z": 6,
+      "description": "Internet uplink from two providers.",
+      "links": [
+        {
+          "label": "Config repo",
+          "url": "https://gitlab.example.internal/network/edge-router"
+        }
+      ],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "fw-01",
+      "name": "Perimeter firewall",
+      "type": "firewall",
+      "layer": "network",
+      "x": -10,
+      "z": 6,
+      "description": "All inbound traffic passes through here.",
+      "links": [
+        {
+          "label": "Rule change process",
+          "url": "https://gitlab.example.internal/wiki/firewall-changes"
+        }
+      ],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "lb-01",
+      "name": "Load balancer",
+      "type": "load-balancer",
+      "layer": "network",
+      "x": -4,
+      "z": 6,
+      "description": "Terminates TLS and routes to the Kubernetes ingress.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "sw-core",
+      "name": "Core switch",
+      "type": "switch",
+      "layer": "network",
+      "x": -10,
+      "z": -3,
+      "description": "Connects the data centre racks and the office link.",
+      "links": [
+        {
+          "label": "Port map",
+          "url": "https://gitlab.example.internal/network/core-switch"
+        }
+      ],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "ap-office",
+      "name": "Office Wi-Fi",
+      "type": "access-point",
+      "layer": "network",
+      "x": 10,
+      "z": 0,
+      "description": "Staff wireless network.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "k8s-prod",
+      "name": "Production cluster",
+      "type": "k8s-cluster",
+      "layer": "platform",
+      "x": -8,
+      "z": -3,
+      "description": "Runs the customer-facing services.",
+      "links": [
+        {
+          "label": "Cluster dashboard",
+          "url": "https://gitlab.example.internal/k8s/prod"
+        },
+        {
+          "label": "Deployment guide",
+          "url": "https://gitlab.example.internal/wiki/deploying"
+        }
+      ],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "db-orders",
+      "name": "Orders database",
+      "type": "database",
+      "layer": "platform",
+      "x": -15,
+      "z": 4,
+      "description": "PostgreSQL primary with one streaming replica.",
+      "links": [
+        {
+          "label": "Backups",
+          "url": "https://gitlab.example.internal/wiki/db-backups"
+        }
+      ],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "cache-01",
+      "name": "Session cache",
+      "type": "cache",
+      "layer": "platform",
+      "x": -9,
+      "z": 4,
+      "description": "In-memory cache for sessions and hot data.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "mq-01",
+      "name": "Order events",
+      "type": "queue",
+      "layer": "platform",
+      "x": -3,
+      "z": 4,
+      "description": "Order events for fulfilment and notifications.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "s3-01",
+      "name": "Object storage",
+      "type": "object-storage",
+      "layer": "platform",
+      "x": 1,
+      "z": -3,
+      "description": "Images, documents, and backups.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "vm-ci",
+      "name": "CI runner VM",
+      "type": "vm",
+      "layer": "platform",
+      "x": 9,
+      "z": -3,
+      "description": "Runs GitLab CI jobs.",
+      "links": [
+        {
+          "label": "Runner settings",
+          "url": "https://gitlab.example.internal/admin/runners"
+        }
+      ],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "ctr-wiki",
+      "name": "Wiki container",
+      "type": "container",
+      "layer": "platform",
+      "x": 10,
+      "z": 3,
+      "description": "Hosts the internal wiki.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "users",
+      "name": "Customers",
+      "type": "users",
+      "layer": "application",
+      "x": -16,
+      "z": 0,
+      "description": "People using the portal and mobile app.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "portal",
+      "name": "Customer portal",
+      "type": "web-app",
+      "layer": "application",
+      "x": -9,
+      "z": -3,
+      "description": "Main customer website.",
+      "links": [
+        {
+          "label": "Open the portal",
+          "url": "https://portal.example.com"
+        },
+        {
+          "label": "Source code",
+          "url": "https://gitlab.example.internal/apps/portal"
+        }
+      ],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "mobile",
+      "name": "Mobile app",
+      "type": "mobile-app",
+      "layer": "application",
+      "x": -9,
+      "z": 4,
+      "description": "iOS and Android app.",
+      "links": [
+        {
+          "label": "Source code",
+          "url": "https://gitlab.example.internal/apps/mobile"
+        }
+      ],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "orders-api",
+      "name": "Orders API",
+      "type": "api-service",
+      "layer": "application",
+      "x": -2,
+      "z": 0,
+      "description": "Creates and tracks orders.",
+      "links": [
+        {
+          "label": "API docs",
+          "url": "https://gitlab.example.internal/apps/orders-api/docs"
+        }
+      ],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "payments",
+      "name": "Payment provider",
+      "type": "external-service",
+      "layer": "application",
+      "x": 5,
+      "z": 0,
+      "description": "Third-party card payments.",
+      "links": [],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    },
+    {
+      "id": "wiki",
+      "name": "Internal wiki",
+      "type": "web-app",
+      "layer": "application",
+      "x": 11,
+      "z": 0,
+      "description": "Team documentation.",
+      "links": [
+        {
+          "label": "Open the wiki",
+          "url": "https://gitlab.example.internal/wiki"
+        }
+      ],
+      "color": null,
+      "scale": 1,
+      "icon": null
+    }
+  ],
+  "connections": [
+    {
+      "id": "k-1",
+      "from": "users",
+      "to": "portal",
+      "label": ""
+    },
+    {
+      "id": "k-2",
+      "from": "users",
+      "to": "mobile",
+      "label": ""
+    },
+    {
+      "id": "k-3",
+      "from": "portal",
+      "to": "orders-api",
+      "label": "REST"
+    },
+    {
+      "id": "k-4",
+      "from": "mobile",
+      "to": "orders-api",
+      "label": "REST"
+    },
+    {
+      "id": "k-5",
+      "from": "orders-api",
+      "to": "payments",
+      "label": "HTTPS"
+    },
+    {
+      "id": "k-6",
+      "from": "portal",
+      "to": "k8s-prod",
+      "label": ""
+    },
+    {
+      "id": "k-7",
+      "from": "orders-api",
+      "to": "k8s-prod",
+      "label": ""
+    },
+    {
+      "id": "k-8",
+      "from": "wiki",
+      "to": "ctr-wiki",
+      "label": ""
+    },
+    {
+      "id": "k-9",
+      "from": "k8s-prod",
+      "to": "db-orders",
+      "label": "SQL"
+    },
+    {
+      "id": "k-10",
+      "from": "k8s-prod",
+      "to": "cache-01",
+      "label": ""
+    },
+    {
+      "id": "k-11",
+      "from": "k8s-prod",
+      "to": "mq-01",
+      "label": "events"
+    },
+    {
+      "id": "k-12",
+      "from": "k8s-prod",
+      "to": "s3-01",
+      "label": ""
+    },
+    {
+      "id": "k-13",
+      "from": "lb-01",
+      "to": "k8s-prod",
+      "label": "ingress"
+    },
+    {
+      "id": "k-14",
+      "from": "vm-ci",
+      "to": "sw-core",
+      "label": ""
+    },
+    {
+      "id": "k-15",
+      "from": "ctr-wiki",
+      "to": "fs-01",
+      "label": ""
+    },
+    {
+      "id": "k-16",
+      "from": "rtr-edge",
+      "to": "fw-01",
+      "label": ""
+    },
+    {
+      "id": "k-17",
+      "from": "fw-01",
+      "to": "lb-01",
+      "label": ""
+    },
+    {
+      "id": "k-18",
+      "from": "lb-01",
+      "to": "sw-core",
+      "label": ""
+    },
+    {
+      "id": "k-19",
+      "from": "sw-core",
+      "to": "ap-office",
+      "label": "office link"
+    },
+    {
+      "id": "k-20",
+      "from": "sw-core",
+      "to": "rack-a1",
+      "label": "10GbE"
+    },
+    {
+      "id": "k-21",
+      "from": "sw-core",
+      "to": "rack-a2",
+      "label": "10GbE"
+    },
+    {
+      "id": "k-22",
+      "from": "sw-core",
+      "to": "rack-a3",
+      "label": "10GbE"
+    },
+    {
+      "id": "k-23",
+      "from": "sw-core",
+      "to": "san-01",
+      "label": "iSCSI"
+    },
+    {
+      "id": "k-24",
+      "from": "sw-core",
+      "to": "fs-01",
+      "label": ""
+    },
+    {
+      "id": "k-25",
+      "from": "ap-office",
+      "to": "ws-01",
+      "label": ""
+    },
+    {
+      "id": "k-26",
+      "from": "ap-office",
+      "to": "ws-02",
+      "label": ""
+    },
+    {
+      "id": "k-27",
+      "from": "k8s-prod",
+      "to": "rack-a1",
+      "label": ""
+    },
+    {
+      "id": "k-28",
+      "from": "k8s-prod",
+      "to": "rack-a2",
+      "label": ""
+    },
+    {
+      "id": "k-29",
+      "from": "db-orders",
+      "to": "rack-a3",
+      "label": ""
+    },
+    {
+      "id": "k-30",
+      "from": "vm-ci",
+      "to": "rack-a3",
+      "label": ""
+    },
+    {
+      "id": "k-31",
+      "from": "s3-01",
+      "to": "san-01",
+      "label": ""
+    },
+    {
+      "id": "k-32",
+      "from": "ups-01",
+      "to": "rack-a1",
+      "label": "power"
+    }
+  ],
+  "storylines": [
+    {
+      "id": "s-order-journey",
+      "name": "How a customer order flows",
+      "steps": [
+        {
+          "title": "Customers arrive",
+          "caption": "Customers reach us through the web portal or the mobile app. Both call the same Orders API.",
+          "view": "3d",
+          "highlight": [
+            "users",
+            "portal",
+            "mobile",
+            "orders-api"
+          ],
+          "camera": null
+        },
+        {
+          "title": "Through the perimeter",
+          "caption": "Traffic comes in over two internet links, passes the firewall, and the load balancer terminates TLS.",
+          "view": "iso",
+          "highlight": [
+            "rtr-edge",
+            "fw-01",
+            "lb-01"
+          ],
+          "camera": null
+        },
+        {
+          "title": "Into the production cluster",
+          "caption": "The load balancer forwards requests to the Kubernetes ingress, where the portal and the Orders API run.",
+          "view": "iso",
+          "highlight": [
+            "lb-01",
+            "k8s-prod",
+            "portal",
+            "orders-api"
+          ],
+          "camera": null
+        },
+        {
+          "title": "Data and events",
+          "caption": "Orders are written to PostgreSQL, sessions live in the cache, and order events go onto the queue for fulfilment.",
+          "view": "iso",
+          "highlight": [
+            "k8s-prod",
+            "db-orders",
+            "cache-01",
+            "mq-01",
+            "s3-01"
+          ],
+          "camera": null
+        },
+        {
+          "title": "Down to the hardware",
+          "caption": "All of this runs on rack row A in Data centre 1, with storage on SAN-01 and power backed by UPS-01.",
+          "view": "3d",
+          "highlight": [
+            "rack-a1",
+            "rack-a2",
+            "rack-a3",
+            "san-01",
+            "ups-01",
+            "sw-core"
+          ],
+          "camera": null
+        }
+      ]
+    }
+  ]
+}

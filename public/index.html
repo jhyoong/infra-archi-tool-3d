@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Infrastructure map</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 4 30 11 16 18 2 11z' fill='%235AA7F0'/%3E%3Cpath d='M2 16l14 7 14-7' fill='none' stroke='%239B87F5' stroke-width='2.5'/%3E%3Cpath d='M2 21l14 7 14-7' fill='none' stroke='%232FBF9F' stroke-width='2.5'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+  <script type="importmap">
+    { "imports": { "three": "./lib/three.module.js" } }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <button type="button" id="btnSidebar" class="icon-btn only-narrow" aria-label="Show sidebar" aria-expanded="false" aria-controls="sidebar">
+      <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>
+    </button>
+    <h1 id="mapTitle">Infrastructure map</h1>
+    <div class="seg" role="group" aria-label="View">
+      <button type="button" data-view="3d" aria-pressed="true">3D</button>
+      <button type="button" data-view="iso" aria-pressed="false">2.5D</button>
+    </div>
+    <button type="button" id="btnHome" class="ghost">Reset view</button>
+    <div id="editTools" class="edit-tools" hidden>
+      <button type="button" id="btnAdd">Add component</button>
+      <button type="button" id="btnAddGroup">Add group</button>
+      <button type="button" id="btnUndo" class="ghost">Undo</button>
+    </div>
+    <span class="spacer"></span>
+    <div id="draftPill" class="draft" hidden>
+      <span id="draftText">Unsaved changes</span>
+      <button type="button" id="btnDiscard" class="link">Discard</button>
+    </div>
+    <button type="button" id="btnImport" class="ghost">Import</button>
+    <button type="button" id="btnExport" class="ghost">Export</button>
+    <button type="button" id="btnEdit" class="edit-toggle" aria-pressed="false">Edit</button>
+    <button type="button" id="btnHelp" class="icon-btn" aria-label="Help and shortcuts">?</button>
+    <input type="file" id="fileInput" accept=".json,application/json" hidden>
+  </header>
+
+  <div class="layout">
+    <aside id="sidebar" class="sidebar" aria-label="Map navigation">
+      <div class="search">
+        <input id="search" type="search" placeholder="Search components" autocomplete="off" aria-label="Search components">
+        <div id="searchResults" class="search-results" hidden></div>
+      </div>
+
+      <section>
+        <h2>Layers</h2>
+        <ul id="layerList" class="layer-list"></ul>
+      </section>
+
+      <section>
+        <div class="sec-head">
+          <h2>Storylines</h2>
+          <button type="button" id="btnNewStory" class="small" hidden>New storyline</button>
+        </div>
+        <div id="storyArea"></div>
+      </section>
+
+      <section>
+        <h2>Display</h2>
+        <label class="check"><input type="checkbox" id="labelsToggle" checked> Show names when zoomed in</label>
+        <label class="field">
+          <span class="field-label">Layer spacing</span>
+          <input type="range" id="gapRange" min="4" max="24" step="1" value="10">
+        </label>
+      </section>
+
+      <section id="mapSettings" hidden>
+        <h2>Map</h2>
+        <label class="field">
+          <span class="field-label">Title</span>
+          <input id="titleInput">
+        </label>
+      </section>
+    </aside>
+
+    <main id="viewport" class="viewport">
+      <div id="stage" class="stage"></div>
+      <div id="banner" class="banner" role="status" hidden></div>
+      <p id="editHint" class="edit-hint" hidden>Drag a component or group to move it. Shift-click to select several. Right-drag to pan.</p>
+
+      <div id="story" class="story" hidden>
+        <div class="story-meta"><span id="storyName"></span><span id="storyCount"></span></div>
+        <h2 id="storyTitle"></h2>
+        <p id="storyCaption"></p>
+        <div class="story-nav">
+          <button type="button" id="storyPrev" class="ghost">Previous</button>
+          <button type="button" id="storyNext" class="primary">Next</button>
+          <span class="spacer"></span>
+          <button type="button" id="storyExit" class="link">Exit storyline</button>
+        </div>
+      </div>
+
+      <div id="loadError" class="load-error" role="alert" hidden>
+        <h2>The map couldn’t be loaded</h2>
+        <p id="loadErrorText"></p>
+        <button type="button" id="loadErrorClose">Continue with an empty map</button>
+      </div>
+
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </main>
+
+    <aside id="panel" class="panel" aria-label="Details" hidden></aside>
+  </div>
+
+  <dialog id="paletteDlg" class="dlg wide" aria-labelledby="paletteTitle">
+    <form method="dialog" class="dlg-head">
+      <h2 id="paletteTitle">Add component</h2>
+      <button class="icon-btn" aria-label="Close" value="cancel">×</button>
+    </form>
+    <div id="paletteBody" class="palette"></div>
+  </dialog>
+
+  <dialog id="layerDlg" class="dlg" aria-labelledby="layerDlgTitle">
+    <form method="dialog" class="dlg-head">
+      <h2 id="layerDlgTitle">Add a group to which layer?</h2>
+      <button class="icon-btn" aria-label="Close" value="cancel">×</button>
+    </form>
+    <div id="layerPickBody" class="layer-pick-list"></div>
+  </dialog>
+
+  <dialog id="helpDlg" class="dlg" aria-labelledby="helpTitle">
+    <form method="dialog" class="dlg-head">
+      <h2 id="helpTitle">Using the map</h2>
+      <button class="icon-btn" aria-label="Close" value="cancel">×</button>
+    </form>
+    <div class="help">
+      <h3>Moving around</h3>
+      <dl>
+        <dt>Drag</dt><dd>Rotate (3D view only)</dd>
+        <dt>Right-drag</dt><dd>Pan</dd>
+        <dt>Scroll</dt><dd>Zoom</dd>
+        <dt>Click</dt><dd>Select and focus a component or group</dd>
+        <dt>Layer name</dt><dd>Zoom to that layer</dd>
+        <dt>F</dt><dd>Focus the selection</dd>
+        <dt>H</dt><dd>Reset the view</dd>
+        <dt>/</dt><dd>Search</dd>
+        <dt>?</dt><dd>Show this help</dd>
+        <dt>Esc</dt><dd>Clear selection or leave a storyline</dd>
+      </dl>
+      <h3>Editing</h3>
+      <dl>
+        <dt>E</dt><dd>Turn edit mode on or off</dd>
+        <dt>Drag</dt><dd>Move a component or group</dd>
+        <dt>Shift-click</dt><dd>Select several components</dd>
+        <dt>Delete</dt><dd>Delete the selection</dd>
+        <dt>Ctrl+Z</dt><dd>Undo</dd>
+      </dl>
+      <h3>Publishing changes</h3>
+      <p>Your edits are kept in this browser until you publish them. Choose Export to download <code>infrastructure.json</code>, replace <code>public/data/infrastructure.json</code> in the repository with it, and commit. GitLab Pages publishes the new map when the pipeline finishes.</p>
+      <h3>Logos and icons</h3>
+      <p>Put image files in the <code>public/icons</code> folder, then enter the path (for example <code>icons/kubernetes.svg</code>) in a component’s icon fields in edit mode.</p>
+    </div>
+  </dialog>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
